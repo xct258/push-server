@@ -29,7 +29,7 @@ fi
 mosquitto -c /etc/mosquitto/mosquitto.conf -d
 
 # 启动 uvicorn
-nohup uvicorn /rec/main:app --host 0.0.0.0 --port $UVICORN_PORT > /dev/null 2>&1 &
+nohup uvicorn main:app --app-dir "$DRIVE_DIR" --host 0.0.0.0 --port 8383 > /dev/null 2>&1 &
 
 # 保持容器运行
 tail -f /dev/null
