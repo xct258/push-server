@@ -2,8 +2,6 @@
 
 DRIVE_DIR=/rec
 SRC_DIR=/usr/local/bin
-MQTT_WS_PORT=${MQTT_WS_PORT:-9001}
-UVICORN_PORT=${UVICORN_PORT:-8383}
 
 # 如果挂载卷为空，从镜像复制应用文件
 if [ ! -f "$DRIVE_DIR/main.py" ]; then
@@ -16,17 +14,17 @@ fi
 
 # 配置 mosquitto（仅首次创建）
 if [ ! -f /etc/mosquitto/mosquitto.conf ]; then
-    cat > /etc/mosquitto/mosquitto.conf << CONF
+    cat > $SRC_DIR/mosquitto.conf << CONF
 listener 1883 127.0.0.1
 allow_anonymous true
-listener $MQTT_WS_PORT 0.0.0.0
+listener 9001 0.0.0.0
 protocol websockets
 allow_anonymous true
 CONF
 fi
 
 # 启动 mosquitto
-mosquitto -c /etc/mosquitto/mosquitto.conf -d
+mosquitto -c $SRC_DIR/mosquitto.conf -d
 
 # 启动 uvicorn
 nohup uvicorn main:app --app-dir "$DRIVE_DIR" --host 0.0.0.0 --port 8383 > /dev/null 2>&1 &
