@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MQTT 推送中心</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; }
+
+.header { background: #161b22; border-bottom: 1px solid #21262d; padding: 0 30px; display: flex; justify-content: space-between; align-items: center; height: 56px; }
+.header h1 { font-size: 18px; font-weight: 600; color: #e6edf3; }
+.header h1 small { font-weight: 400; font-size: 13px; color: #8b949e; margin-left: 10px; }
+.header .info { font-size: 12px; color: #8b949e; display: flex; align-items: center; gap: 16px; }
+.header .info .dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; }
+.header .info .dot.stopped { background: #f85149; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+.filters { background: #161b22; border: 1px solid #21262d; padding: 12px 20px; border-radius: 8px; margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.filters label { font-size: 13px; color: #8b949e; white-space: nowrap; }
+
+.combo { position: relative; display: inline-block; }
+.combo input { padding: 7px 12px; border: 1px solid #30363d; border-radius: 6px; font-size: 13px; outline: none; background: #0d1117; color: #c9d1d9; width: 150px; cursor: default; }
+.combo input:focus { border-color: #58a6ff; }
+.combo input::placeholder { color: #484f58; }
+.combo-dropdown { position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; max-height: 200px; overflow-y: auto; display: none; z-index: 10; }
+.combo-dropdown.open { display: block; }
+.combo-dropdown div { padding: 6px 12px; font-size: 13px; cursor: pointer; color: #c9d1d9; }
+.combo-dropdown div:hover { background: #1c2128; color: #58a6ff; }
+.combo-dropdown div.highlighted { background: #1c2128; color: #58a6ff; }
+.combo-dropdown .empty-hint { color: #484f58; cursor: default; }
+.combo-dropdown .empty-hint:hover { background: transparent; color: #484f58; }
+.combo-dropdown strong { color: #f0883e; font-weight: 600; }
+
+.table-wrap { background: #161b22; border: 1px solid #21262d; border-radius: 8px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 10px 16px; font-size: 12px; color: #8b949e; font-weight: 600; border-bottom: 1px solid #21262d; white-space: nowrap; }
+td { padding: 10px 16px; border-bottom: 1px solid #21262d; font-size: 13px; vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #1c2128; }
+.topic-tag { background: #1c2128; padding: 2px 8px; border-radius: 4px; font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; color: #58a6ff; user-select: text; }
+.msg-cell { max-width: 380px; word-break: break-word; line-height: 1.5; user-select: text; }
+.msg-cell p { margin: 0; }
+.msg-cell code { background: #1c2128; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+.msg-cell pre { background: #1c2128; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
+.msg-cell img { max-width: 100%; border-radius: 4px; }
+.msg-cell a { color: #58a6ff; }
+.msg-cell ul, .msg-cell ol { padding-left: 20px; }
+.msg-cell table { font-size: 12px; }
+.msg-cell th, .msg-cell td { padding: 4px 8px; border: 1px solid #30363d; }
+.msg-cell blockquote { border-left: 3px solid #30363d; padding-left: 12px; color: #8b949e; margin: 4px 0; }
+.mode-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.mode-append { background: #1c2128; color: #8b949e; }
+.mode-overwrite { background: #2d1b00; color: #f0883e; }
+.time-cell { font-size: 12px; color: #8b949e; white-space: nowrap; user-select: text; }
+
+.empty-state { text-align: center; padding: 60px 20px; color: #484f58; }
+.empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+.empty-state p { font-size: 14px; }
+
+.btn-repush { background: #21262d; border: 1px solid #30363d; color: #58a6ff; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; user-select: none; }
+.btn-repush:hover { background: #30363d; color: #79c0ff; }
+.btn-repush:disabled { opacity: .4; cursor: default; }
+
+.btn-expand { background: transparent; border: 1px solid #30363d; color: #58a6ff; padding: 8px 24px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.btn-expand:hover { background: #1c2128; }
+
+.loading-row td { text-align: center; padding: 40px; color: #8b949e; }
+.loading-row .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #21262d; border-top-color: #58a6ff; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>MQTT 推送中心 <small>推送记录</small></h1>
+  <div class="info">
+    <span class="dot" id="status-dot"></span>
+    <span id="count-label">加载中...</span>
+  </div>
+</div>
+<div class="container">
+  <div class="filters">
+    <label>服务器</label>
+    <div class="combo" id="combo-server">
+      <input type="text" id="filter-server" placeholder="全部" autocomplete="off">
+      <div class="combo-dropdown" id="drop-server"></div>
+    </div>
+    <label>主题</label>
+    <div class="combo" id="combo-topic">
+      <input type="text" id="filter-topic" placeholder="全部" autocomplete="off">
+      <div class="combo-dropdown" id="drop-topic"></div>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:100px">服务器</th>
+          <th>主题</th>
+          <th>消息</th>
+          <th style="width:60px;text-align:center">推送</th>
+          <th style="width:80px">类型</th>
+          <th style="width:160px">时间</th>
+          <th style="width:90px">操作</th>
+        </tr>
+      </thead>
+      <tbody id="records-body">
+        <tr class="loading-row"><td colspan="7"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script>
+const INPUT_DELAY = 200;
+let filterServer = '';
+let filterTopic = '';
+let serverOptions = [];
+let topicOptions = [];
+let loadTimer = null;
+
+function comboSetup(inputId, dropId, onChange) {
+  const input = document.getElementById(inputId);
+  const drop = document.getElementById(dropId);
+  let highlightedIdx = -1;
+
+  function showDropdown() { drop.classList.add('open'); }
+
+  function hideDropdown() { drop.classList.remove('open'); highlightedIdx = -1; }
+
+  function renderOptions(filter) {
+    const opts = dropId === 'drop-server' ? serverOptions : topicOptions;
+    let matched = opts.slice();
+    let hlRe = null;
+    if (filter) {
+      try {
+        const re = new RegExp(filter, 'i');
+        matched = opts.filter(v => re.test(v));
+        hlRe = new RegExp('((?:' + filter + '))', 'gi');
+      } catch (e) {
+        const q = filter.toLowerCase();
+        matched = opts.filter(v => v.toLowerCase().includes(q));
+        hlRe = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+      }
+    }
+    const html = matched.length === 0
+      ? '<div class="empty-hint">无匹配</div>'
+      : matched.map(v => {
+          const text = esc(v);
+          return '<div>' + (hlRe ? text.replace(hlRe, '<strong>$1</strong>') : text) + '</div>';
+        }).join('');
+    drop.innerHTML = html;
+    highlightedIdx = -1;
+  }
+
+  input.addEventListener('focus', () => {
+    renderOptions(input.value);
+    showDropdown();
+  });
+
+  input.addEventListener('input', () => {
+    renderOptions(input.value);
+    showDropdown();
+    clearTimeout(loadTimer);
+    loadTimer = setTimeout(() => { onChange(input.value); }, INPUT_DELAY);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const items = drop.querySelectorAll('div:not(.empty-hint)');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault(); highlightedIdx = Math.min(highlightedIdx + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('highlighted', i === highlightedIdx));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault(); highlightedIdx = Math.max(highlightedIdx - 1, 0);
+      items.forEach((el, i) => el.classList.toggle('highlighted', i === highlightedIdx));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (highlightedIdx >= 0 && items[highlightedIdx]) {
+        input.value = items[highlightedIdx].textContent;
+      }
+      hideDropdown();
+      onChange(input.value);
+    } else if (e.key === 'Escape') {
+      hideDropdown();
+    }
+  });
+
+  drop.addEventListener('mousedown', (e) => {
+    const div = e.target.closest('div');
+    if (div && !div.classList.contains('empty-hint')) {
+      input.value = div.textContent;
+      hideDropdown();
+      onChange(input.value);
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!input.closest('.combo').contains(e.target)) hideDropdown();
+  });
+}
+
+function applyFilters() {
+  filterServer = document.getElementById('filter-server').value;
+  filterTopic = document.getElementById('filter-topic').value;
+  loadData();
+}
+
+async function loadData() {
+  const params = new URLSearchParams({ limit: 100 });
+  if (filterServer) params.set('server_name', filterServer);
+  if (filterTopic) params.set('topic', filterTopic);
+
+  try {
+    const res = await fetch('/records?' + params.toString());
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    render(data);
+  } catch (e) {
+    document.getElementById('count-label').textContent = '连接失败';
+    document.getElementById('status-dot').className = 'dot stopped';
+    document.getElementById('records-body').innerHTML =
+      '<tr><td colspan="7" class="empty-state"><div class="icon">🔌</div><p>无法连接到服务器</p></td></tr>';
+  }
+}
+
+function render(data) {
+  const total = data.total;
+  document.getElementById('count-label').textContent = '共 ' + total + ' 条';
+  document.getElementById('status-dot').className = 'dot';
+
+  const allServers = new Set(serverOptions);
+  const allTopics = new Set(topicOptions);
+  for (const r of data.records) {
+    if (r.server_name) allServers.add(r.server_name);
+    if (r.topic) allTopics.add(r.topic);
+  }
+  serverOptions = [...allServers].sort();
+  topicOptions = [...allTopics].sort();
+
+  const tbody = document.getElementById('records-body');
+
+  if (total === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">📭</div><p>暂无推送记录</p></td></tr>';
+    return;
+  }
+
+  const showCount = total > 5 ? 5 : total;
+  let html = '';
+  for (let i = 0; i < data.records.length; i++) {
+    const r = data.records[i];
+    const actionBtn = r.push_to_mqtt
+      ? '<button class="btn-repush" onclick="repush(this,\'' + esc(r.server_name) + '\',' + r.id + ')">重新推送</button>'
+      : '-';
+    const hidden = i >= 5 ? ' style="display:none"' : '';
+    html += '<tr' + (i >= 5 ? ' class="more-row"' : '') + hidden + '>' +
+      '<td class="time-cell">' + esc(r.server_name || '-') + '</td>' +
+      '<td><span class="topic-tag">' + esc(r.topic) + '</span></td>' +
+      '<td class="msg-cell">' + renderMd(r.message) + '</td>' +
+      '<td style="text-align:center">' + (r.push_to_mqtt ? '是' : '否') + '</td>' +
+      '<td style="text-align:center"><span class="mode-badge mode-' + (r.mode || 'append') + '">' + (r.mode === 'overwrite' ? '覆盖' : '持续') + '</span></td>' +
+      '<td class="time-cell">' + r.created_at + '</td>' +
+      '<td style="text-align:center">' + actionBtn + '</td>' +
+      '</tr>';
+  }
+  if (total > 5) {
+    html += '<tr id="expand-row"><td colspan="7" style="text-align:center;padding:12px"><button class="btn-expand" onclick="expandAll()">展开全部 (' + (total - 5) + ' 条)</button></td></tr>';
+  }
+  tbody.innerHTML = html;
+}
+
+function expandAll() {
+  document.querySelectorAll('.more-row').forEach(el => el.style.display = '');
+  document.getElementById('expand-row').style.display = 'none';
+}
+
+async function repush(btn, server_name, id) {
+  btn.disabled = true;
+  btn.textContent = '推送中...';
+  try {
+    const res = await fetch('/api/repush', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server_name, id }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      btn.textContent = '已推送';
+      setTimeout(() => { btn.textContent = '重新推送'; btn.disabled = false; }, 2000);
+    } else {
+      btn.textContent = '推送失败';
+      setTimeout(() => { btn.textContent = '重新推送'; btn.disabled = false; }, 3000);
+    }
+  } catch (e) {
+    btn.textContent = '请求失败';
+    setTimeout(() => { btn.textContent = '重新推送'; btn.disabled = false; }, 3000);
+  }
+}
+
+function renderMd(text) {
+  return DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+comboSetup('filter-server', 'drop-server', () => applyFilters());
+comboSetup('filter-topic', 'drop-topic', () => applyFilters());
+loadData();
+setInterval(loadData, 5000);
+</script>
+</body>
+</html>
