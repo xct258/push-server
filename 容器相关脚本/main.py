@@ -11,6 +11,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -52,12 +54,12 @@ async def validation_handler(request: Request, exc: RequestValidationError):
 
 @app.get("/")
 async def serve_frontend():
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(BASE_DIR, "static/index.html"))
 
 MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
 
-DATA_DIR = "push_records"
+DATA_DIR = os.path.join(BASE_DIR, "push_records")
 MAX_RECORDS_PER_SERVER = 100
 
 def server_path(name):
