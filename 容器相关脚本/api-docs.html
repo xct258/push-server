@@ -32,7 +32,10 @@ td code { font-family: 'SF Mono', 'Menlo', monospace; color: #79c0ff; background
 .req-no { color: #8b949e; }
 pre { background: #0b1220; border: 1px solid #21262d; border-radius: 6px; padding: 10px 12px; overflow-x: auto; font-size: 12px; margin-top: 8px; }
 code { font-family: 'SF Mono', 'Menlo', monospace; }
-h3 { font-size: 13px; color: #e6edf3; margin: 12px 0 6px; }
+h3 { font-size: 13px; color: #e6edf3; margin: 12px 0 6px; display: flex; align-items: center; gap: 10px; }
+.copy-btn { background: #21262d; border: 1px solid #30363d; color: #8b949e; padding: 2px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: background .15s, color .15s; }
+.copy-btn:hover { background: #30363d; color: #c9d1d9; }
+.copy-btn.copied { color: #3fb950; border-color: #3fb950; }
 .loading, .empty { text-align: center; color: #484f58; padding: 48px 0; font-size: 14px; }
 </style>
 </head>
@@ -68,17 +71,44 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function curlExample(method, path, bodySchema) {
-  let cmd = 'curl -X ' + method.toUpperCase() + ' http://&lt;服务器IP&gt;:8383' + path;
-  if (bodySchema && bodySchema.properties) {
-    const lines = Object.entries(bodySchema.properties).map(([k, v]) => {
-      const val = v.default !== undefined ? JSON.stringify(v.default) : (TYPE_DEF[v.type] || '"示例"');
-      return '  "' + k + '": ' + val;
-    });
-    cmd += " -H 'Content-Type: application/json' -d '\\\n" + lines.join(',\n') + "\\\n'";
-  }
-  return cmd;
+function buildCurl(method, path, bodySchema) {
+  const base = 'curl -X ' + method.toUpperCase() + ' http://<服务器IP>:8383' + path;
+  if (!bodySchema || !bodySchema.properties) return { single: base, display: base };
+  const parts = Object.entries(bodySchema.properties).map(([k, v]) => {
+    const val = v.default !== undefined ? JSON.stringify(v.default) : (TYPE_DEF[v.type] || '"示例"');
+    return '  "' + k + '": ' + val;
+  });
+  const bodyLines = parts.join(',\n');
+  const single = base + " -H 'Content-Type: application/json' -d '{\n" + bodyLines + "\n}'";
+  const display = base + " \\\n  -H 'Content-Type: application/json' \\\n  -d '{\n" + bodyLines + "\n}'";
+  return { single: single, display: display };
 }
+
+async function copyCurl(btn) {
+  const text = btn.dataset.copy;
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    ok = true;
+  } catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+  btn.textContent = ok ? '已复制 ✓' : '复制失败';
+  btn.classList.toggle('copied', ok);
+  setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('copied'); }, 1500);
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.copy-btn');
+  if (btn) copyCurl(btn);
+});
 
 async function load() {
   try {
@@ -117,7 +147,10 @@ async function load() {
           html += '<tr><td><code>' + esc(name) + '</code></td><td>' + typeName(prop) + '</td>' +
             '<td class="' + (req.includes(name) ? 'req-yes' : 'req-no') + '">' + (req.includes(name) ? '是' : '否') + '</td><td>' + esc(prop.description || '-') + '</td></tr>';
         }
-        html += '</table><h3>curl 请求示例</h3><pre><code>' + curlExample(method, path, bodySchema) + '</code></pre>';
+        html += '</table>';
+        const curl = buildCurl(method, path, bodySchema);
+        html += '<h3>curl 请求示例 <button class="copy-btn" data-copy="' + esc(curl.display) + '" title="复制为可直接执行的命令">复制</button></h3>' +
+          '<pre><code>' + esc(curl.display) + '</code></pre>';
       }
       html += '</div></div>';
       return html;
