@@ -4,133 +4,286 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MQTT 推送中心</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+html { scroll-behavior: smooth; }
+* { scrollbar-width: thin; scrollbar-color: #30363d transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
+::-webkit-scrollbar-corner { background: transparent; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; }
 
-.header { background: #161b22; border-bottom: 1px solid #21262d; padding: 0 30px; display: flex; justify-content: space-between; align-items: center; height: 56px; }
-.header h1 { font-size: 18px; font-weight: 600; color: #e6edf3; }
+.header { background: #161b22; border-bottom: 1px solid #21262d; padding: 10px 16px; display: flex; align-items: center; gap: 10px 16px; min-height: 56px; position: sticky; top: 0; z-index: 100; flex-wrap: wrap; }
+.header h1 { font-size: 17px; font-weight: 600; color: #e6edf3; white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; line-height: 1; }
 .header h1 small { font-weight: 400; font-size: 13px; color: #8b949e; margin-left: 10px; }
-.header .info { font-size: 12px; color: #8b949e; display: flex; align-items: center; gap: 16px; }
-.header .info .dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; }
+.header .info { font-size: 12px; color: #8b949e; display: flex; align-items: center; gap: 10px; margin-left: auto; flex-shrink: 0; line-height: 1; }
+.header .info .dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; flex-shrink: 0; transition: background .3s; }
 .header .info .dot.stopped { background: #f85149; }
+#count-label { white-space: nowrap; }
+.header-filters { display: flex; align-items: center; gap: 6px 12px; flex: 0 1 auto; min-width: 0; }
+.filter-field { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
+.filter-field label { font-size: 13px; color: #8b949e; white-space: nowrap; flex-shrink: 0; line-height: 1; }
+.filter-field .combo { flex: 0 1 150px; min-width: 90px; }
+.combo input { padding: 0 12px; border: 1px solid #30363d; border-radius: 6px; font-size: 13px; outline: none; background: #0d1117; color: #c9d1d9; width: 100%; cursor: default; transition: border-color .15s, background .15s; height: 32px; }
+.btn-clear { background: transparent; border: 1px solid #30363d; color: #8b949e; padding: 3px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; flex-shrink: 0; }
+.btn-clear:hover { color: #f85149; border-color: #f85149; }
+.btn-clear[hidden] { display: none; }
 
-.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+.new-hint { background: #3fb950; border: none; color: #0d1117; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; animation: hintIn .3s ease, pulse 1.2s .3s ease-in-out infinite; white-space: nowrap; }
+.new-hint:hover { background: #56d364; }
+.new-hint[hidden] { display: none; }
+@keyframes hintIn { from { opacity: 0; transform: translateY(-6px); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
 
-.filters { background: #161b22; border: 1px solid #21262d; padding: 12px 20px; border-radius: 8px; margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.filters label { font-size: 13px; color: #8b949e; white-space: nowrap; }
+.container { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
 .combo { position: relative; display: inline-block; }
-.combo input { padding: 7px 12px; border: 1px solid #30363d; border-radius: 6px; font-size: 13px; outline: none; background: #0d1117; color: #c9d1d9; width: 150px; cursor: default; }
 .combo input:focus { border-color: #58a6ff; }
+.combo input.has-value { padding-right: 30px; }
+.combo.active input { border-color: #58a6ff; background: #0b1220; }
 .combo input::placeholder { color: #484f58; }
-.combo-dropdown { position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; max-height: 200px; overflow-y: auto; display: none; z-index: 10; }
+.combo-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; border-radius: 50%; border: none; background: #30363d; color: #c9d1d9; font-size: 12px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+.combo-clear:hover { background: #484f58; color: #fff; }
+.combo-clear[hidden] { display: none; }
+.combo-dropdown { position: fixed; left: 0; top: 0; width: 150px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; max-height: 200px; overflow-y: auto; display: none; z-index: 1000; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); transition: opacity .12s ease, transform .12s ease; }
+.combo-bridge { position: fixed; display: none; z-index: 999; }
 .combo-dropdown.open { display: block; }
-.combo-dropdown div { padding: 6px 12px; font-size: 13px; cursor: pointer; color: #c9d1d9; }
+.combo-dropdown div { padding: 6px 12px; font-size: 13px; cursor: pointer; color: #c9d1d9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .1s; }
 .combo-dropdown div:hover { background: #1c2128; color: #58a6ff; }
 .combo-dropdown div.highlighted { background: #1c2128; color: #58a6ff; }
 .combo-dropdown .empty-hint { color: #484f58; cursor: default; }
 .combo-dropdown .empty-hint:hover { background: transparent; color: #484f58; }
+.combo-dropdown .all-option { color: #8b949e; border-bottom: 1px solid #21262d; margin-bottom: 2px; }
+.combo-dropdown .all-option:hover { color: #58a6ff; }
+.combo-dropdown .selected::before { content: '✓ '; color: #3fb950; }
 .combo-dropdown strong { color: #f0883e; font-weight: 600; }
 
-.table-wrap { background: #161b22; border: 1px solid #21262d; border-radius: 8px; overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; }
-th { text-align: left; padding: 10px 16px; font-size: 12px; color: #8b949e; font-weight: 600; border-bottom: 1px solid #21262d; white-space: nowrap; }
-td { padding: 10px 16px; border-bottom: 1px solid #21262d; font-size: 13px; vertical-align: middle; }
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: #1c2128; }
-.topic-tag { background: #1c2128; padding: 2px 8px; border-radius: 4px; font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; color: #58a6ff; user-select: text; }
-.msg-cell { max-width: 380px; word-break: break-word; line-height: 1.5; user-select: text; }
-.msg-cell p { margin: 0; }
-.msg-cell code { background: #1c2128; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
-.msg-cell pre { background: #1c2128; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
-.msg-cell img { max-width: 100%; border-radius: 4px; }
-.msg-cell a { color: #58a6ff; }
-.msg-cell ul, .msg-cell ol { padding-left: 20px; }
-.msg-cell table { font-size: 12px; }
-.msg-cell th, .msg-cell td { padding: 4px 8px; border: 1px solid #30363d; }
-.msg-cell blockquote { border-left: 3px solid #30363d; padding-left: 12px; color: #8b949e; margin: 4px 0; }
-.mode-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.card-list { display: flex; flex-direction: column; gap: 12px; }
+.card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; overflow: hidden; transition: border-color .15s; animation: cardIn .3s ease backwards; }
+.card:hover { border-color: #30363d; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(8px); } }
+
+.card-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #21262d; flex-wrap: wrap; }
+.card-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+.topic-tag { background: #1c2128; padding: 3px 10px; border-radius: 4px; font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; color: #58a6ff; user-select: text; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; transition: background .15s, transform .1s; }
+.topic-tag:hover { background: #30363d; }
+.topic-tag:active { transform: scale(.96); }
+.mode-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; flex-shrink: 0; }
 .mode-append { background: #1c2128; color: #8b949e; }
 .mode-overwrite { background: #2d1b00; color: #f0883e; }
-.time-cell { font-size: 12px; color: #8b949e; white-space: nowrap; user-select: text; }
 
-.empty-state { text-align: center; padding: 60px 20px; color: #484f58; }
-.empty-state .icon { font-size: 48px; margin-bottom: 12px; }
-.empty-state p { font-size: 14px; }
+.btn-copy { background: #21262d; border: 1px solid #30363d; color: #8b949e; padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: background .15s, color .15s, border-color .15s, transform .1s; }
+.btn-copy:hover { color: #c9d1d9; background: #30363d; }
+.btn-copy:active { transform: scale(.96); }
+.btn-copy.copied { color: #3fb950 !important; border-color: #3fb950 !important; opacity: 1 !important; }
+.card-msg { max-height: 240px; overflow: hidden; position: relative; transition: max-height .25s ease; }
+.card-msg .btn-copy { position: absolute; top: 8px; right: 8px; z-index: 1; opacity: .7; background: rgba(22, 27, 34, .85); border: 1px solid #30363d; color: #8b949e; padding: 3px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; transition: opacity .15s, color .15s, border-color .15s, transform .1s; }
+.card-msg .btn-copy:hover { opacity: 1; color: #c9d1d9; background: rgba(48, 54, 61, .9); }
+.card-msg.clamped::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 48px; background: linear-gradient(transparent, #161b22); pointer-events: none; }
+.card-msg.expanded { max-height: none; }
+.card-msg-inner { padding: 12px 16px; font-size: 13px; line-height: 1.6; word-break: break-word; user-select: text; }
+.card-msg-inner p { margin: 0 0 6px; }
+.card-msg-inner p:last-child { margin-bottom: 0; }
+.card-msg-inner code { background: #1c2128; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+.card-msg-inner pre { background: #1c2128; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
+.card-msg-inner img { max-width: 100%; border-radius: 4px; }
+.card-msg-inner a { color: #58a6ff; }
+.card-msg-inner ul, .card-msg-inner ol { padding-left: 20px; margin-bottom: 6px; }
+.card-msg-inner table { font-size: 12px; border-collapse: collapse; }
+.card-msg-inner th, .card-msg-inner td { padding: 4px 8px; border: 1px solid #30363d; }
+.card-msg-inner blockquote { border-left: 3px solid #30363d; padding-left: 12px; color: #8b949e; margin: 4px 0 6px; }
 
-.btn-repush { background: #21262d; border: 1px solid #30363d; color: #58a6ff; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; user-select: none; }
-.btn-repush:hover { background: #30363d; color: #79c0ff; }
-.btn-repush:disabled { opacity: .4; cursor: default; }
+.card-meta { display: flex; align-items: center; gap: 16px; padding: 8px 16px; border-top: 1px solid #21262d; font-size: 12px; color: #8b949e; flex-wrap: wrap; min-height: 34px; }
+.meta-server { cursor: pointer; user-select: text; transition: color .15s; }
+.meta-server:hover { color: #58a6ff; }
+.meta-server:active { transform: scale(.97); }
+.meta-push { margin-left: auto; cursor: pointer; padding: 2px 10px; border-radius: 4px; font-size: 11px; border: 1px solid transparent; user-select: none; transition: background .15s, opacity .15s; }
+.meta-push.success { color: #3fb950; border-color: rgba(63, 185, 80, .4); }
+.meta-push.failed { color: #f85149; border-color: rgba(248, 81, 73, .4); }
+.meta-push.skipped { color: #f0883e; border-color: rgba(240, 136, 62, .4); }
+.meta-push:hover:not(.busy) { background: rgba(255, 255, 255, .04); }
+.meta-push.busy { opacity: .6; cursor: default; }
+.btn-toggle-msg { background: transparent; border: none; color: #58a6ff; font-size: 12px; cursor: pointer; padding: 2px 4px; }
+.btn-toggle-msg:hover { color: #79c0ff; }
 
-.btn-expand { background: transparent; border: 1px solid #30363d; color: #58a6ff; padding: 8px 24px; border-radius: 6px; font-size: 13px; cursor: pointer; }
-.btn-expand:hover { background: #1c2128; }
+.btn-page { background: #161b22; border: 1px solid #21262d; color: #58a6ff; padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; transition: background .15s, color .15s, transform .1s; }
+.btn-page:hover:not(:disabled) { background: #1c2128; color: #79c0ff; }
+.btn-page:active:not(:disabled) { transform: scale(.96); }
+.btn-page:disabled { opacity: .4; cursor: default; }
+.pager { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 8px 0; flex-wrap: wrap; }
+.pager-info { font-size: 12px; color: #8b949e; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.pager-chip { background: #1c2128; border: 1px solid #30363d; color: #58a6ff; padding: 2px 8px; border-radius: 4px; font-size: 11px; animation: chipIn .2s ease; }
+@keyframes chipIn { from { opacity: 0; transform: scale(.9); } }
 
-.loading-row td { text-align: center; padding: 40px; color: #8b949e; }
-.loading-row .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #21262d; border-top-color: #58a6ff; border-radius: 50%; animation: spin .8s linear infinite; }
+.state-card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; text-align: center; padding: 48px 20px; color: #484f58; }
+.state-card .icon { font-size: 40px; margin-bottom: 10px; }
+.state-card p { font-size: 14px; }
+.state-card .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #21262d; border-top-color: #58a6ff; border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 960px) {
+  .header h1 { flex: 1 1 100%; font-size: 15px; }
+}
+@media (max-width: 640px) {
+  .header { padding: 10px; gap: 10px; }
+  .header h1 { font-size: 14px; }
+  .header h1 small { display: none; }
+  .filter-field { flex: 1 1 50%; min-width: 0; }
+  .filter-field .combo { flex: 1 1 auto; min-width: 0; }
+  .header .info { flex: 1 1 100%; margin-left: 0; justify-content: flex-end; }
+  .container { padding: 12px; }
+  .card-top { flex-direction: column; align-items: stretch; }
+  .card-msg { max-height: 180px; }
+  .card-meta { gap: 10px; font-size: 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
 </style>
 </head>
 <body>
 <div class="header">
   <h1>MQTT 推送中心 <small>推送记录</small></h1>
+  <div class="header-filters">
+    <div class="filter-field">
+      <label for="filter-server">服务器</label>
+      <div class="combo" id="combo-server">
+        <input type="text" id="filter-server" placeholder="全部" autocomplete="off" data-bwignore>
+        <button class="combo-clear" id="clear-server" hidden>×</button>
+        <div class="combo-dropdown" id="drop-server"></div>
+      </div>
+    </div>
+    <div class="filter-field">
+      <label for="filter-topic">主题</label>
+      <div class="combo" id="combo-topic">
+        <input type="text" id="filter-topic" placeholder="全部" autocomplete="off" data-bwignore>
+        <button class="combo-clear" id="clear-topic" hidden>×</button>
+        <div class="combo-dropdown" id="drop-topic"></div>
+      </div>
+    </div>
+  </div>
   <div class="info">
     <span class="dot" id="status-dot"></span>
     <span id="count-label">加载中...</span>
+    <button class="btn-clear" id="btn-clear" hidden>清除筛选</button>
+    <button class="new-hint" id="new-hint" hidden>有新消息，点击刷新</button>
   </div>
 </div>
 <div class="container">
-  <div class="filters">
-    <label>服务器</label>
-    <div class="combo" id="combo-server">
-      <input type="text" id="filter-server" placeholder="全部" autocomplete="off">
-      <div class="combo-dropdown" id="drop-server"></div>
-    </div>
-    <label>主题</label>
-    <div class="combo" id="combo-topic">
-      <input type="text" id="filter-topic" placeholder="全部" autocomplete="off">
-      <div class="combo-dropdown" id="drop-topic"></div>
-    </div>
+  <div class="card-list" id="card-list">
+    <div class="state-card"><div class="spinner"></div><p style="margin-top:10px">加载中...</p></div>
   </div>
-
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th style="width:100px">服务器</th>
-          <th>主题</th>
-          <th>消息</th>
-          <th style="width:60px;text-align:center">推送</th>
-          <th style="width:80px">类型</th>
-          <th style="width:160px">时间</th>
-          <th style="width:90px">操作</th>
-        </tr>
-      </thead>
-      <tbody id="records-body">
-        <tr class="loading-row"><td colspan="7"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></td></tr>
-      </tbody>
-    </table>
-  </div>
+  <div id="list-footer"></div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script>
 const INPUT_DELAY = 200;
+const PAGE = 10;
 let filterServer = '';
 let filterTopic = '';
 let serverOptions = [];
 let topicOptions = [];
 let loadTimer = null;
+let lastFingerprint = '';
+let currentPage = 1;
+let lastTotal = null;
+let newCount = 0;
+let currentAbort = null;
+const expandedMsgs = new Set();
 
-function comboSetup(inputId, dropId, onChange) {
+const mdCache = new Map();
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ESC_MAP[c]);
+}
+
+function comboSetup(inputId, dropId, clearId, onChange) {
   const input = document.getElementById(inputId);
   const drop = document.getElementById(dropId);
+  const clearBtn = document.getElementById(clearId);
   let highlightedIdx = -1;
 
-  function showDropdown() { drop.classList.add('open'); }
+  function updateState() {
+    const has = !!input.value;
+    clearBtn.hidden = !has;
+    input.classList.toggle('has-value', has);
+    input.closest('.combo').classList.toggle('active', has);
+  }
 
-  function hideDropdown() { drop.classList.remove('open'); highlightedIdx = -1; }
+  drop.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    if (drop.scrollHeight > drop.clientHeight + 1) {
+      const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * window.innerHeight : e.deltaY;
+      drop.scrollTop += px;
+    }
+  }, { passive: false });
+
+  let closeTimer = null;
+  let hideTimer = null;
+  const bridge = document.createElement('div');
+  bridge.className = 'combo-bridge';
+  document.body.appendChild(bridge);
+
+  function showDropdown() {
+    clearTimeout(hideTimer);
+    const rect = input.getBoundingClientRect();
+    drop.style.top = (rect.bottom + 4) + 'px';
+    drop.style.left = rect.left + 'px';
+    drop.style.width = rect.width + 'px';
+    bridge.style.top = rect.bottom + 'px';
+    bridge.style.left = rect.left + 'px';
+    bridge.style.width = rect.width + 'px';
+    bridge.style.height = '4px';
+    bridge.style.display = 'block';
+    drop.classList.add('open');
+    drop.style.opacity = '0';
+    drop.style.transform = 'translateY(-4px)';
+    requestAnimationFrame(() => {
+      drop.style.opacity = '1';
+      drop.style.transform = 'none';
+    });
+  }
+
+  window.addEventListener('resize', () => {
+    if (drop.classList.contains('open')) showDropdown();
+  });
+  window.addEventListener('scroll', () => {
+    if (drop.classList.contains('open')) showDropdown();
+  }, { passive: true });
+
+  function hideDropdown() {
+    clearTimeout(closeTimer);
+    clearTimeout(hideTimer);
+    bridge.style.display = 'none';
+    drop.style.opacity = '0';
+    drop.style.transform = 'translateY(-4px)';
+    hideTimer = setTimeout(() => {
+      drop.classList.remove('open');
+      highlightedIdx = -1;
+    }, 120);
+  }
+
+  function scheduleClose() {
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(hideDropdown, 120);
+  }
+
+  window.addEventListener('options-updated', () => {
+    if (drop.classList.contains('open')) renderOptions(input.value);
+  });
+
+  bridge.addEventListener('mouseenter', () => { clearTimeout(closeTimer); });
+  bridge.addEventListener('mouseleave', (e) => {
+    if (e.relatedTarget && (input.contains(e.relatedTarget) || drop.contains(e.relatedTarget))) return;
+    scheduleClose();
+  });
 
   function renderOptions(filter) {
     const opts = dropId === 'drop-server' ? serverOptions : topicOptions;
@@ -147,15 +300,47 @@ function comboSetup(inputId, dropId, onChange) {
         hlRe = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
       }
     }
-    const html = matched.length === 0
-      ? '<div class="empty-hint">无匹配</div>'
-      : matched.map(v => {
-          const text = esc(v);
-          return '<div>' + (hlRe ? text.replace(hlRe, '<strong>$1</strong>') : text) + '</div>';
-        }).join('');
+    let html = '<div class="all-option' + (filter === '' ? ' selected' : '') + '">全部</div>';
+    if (matched.length === 0) {
+      html += '<div class="empty-hint">无匹配</div>';
+    } else {
+      html += matched.map(v => {
+        const text = esc(v);
+        const cls = v === filter ? ' selected' : '';
+        return '<div class="' + cls.trim() + '" title="' + text + '">' +
+          (hlRe ? text.replace(hlRe, '<strong>$1</strong>') : text) + '</div>';
+      }).join('');
+    }
     drop.innerHTML = html;
     highlightedIdx = -1;
   }
+
+  function commit(value) {
+    input.value = value;
+    updateState();
+    onChange(value);
+  }
+
+  clearBtn.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    commit('');
+    renderOptions(input.value);
+  });
+
+  input.addEventListener('mouseleave', (e) => {
+    if (e.relatedTarget && (drop.contains(e.relatedTarget) || e.relatedTarget === bridge)) return;
+    if (drop.matches(':hover')) return;
+    scheduleClose();
+  });
+
+  input.addEventListener('mouseenter', () => {
+    clearTimeout(closeTimer);
+    if (document.activeElement === input && !drop.classList.contains('open')) {
+      renderOptions(input.value);
+      showDropdown();
+    }
+  });
 
   input.addEventListener('focus', () => {
     renderOptions(input.value);
@@ -163,6 +348,7 @@ function comboSetup(inputId, dropId, onChange) {
   });
 
   input.addEventListener('input', () => {
+    updateState();
     renderOptions(input.value);
     showDropdown();
     clearTimeout(loadTimer);
@@ -170,7 +356,7 @@ function comboSetup(inputId, dropId, onChange) {
   });
 
   input.addEventListener('keydown', (e) => {
-    const items = drop.querySelectorAll('div:not(.empty-hint)');
+    const items = drop.querySelectorAll('div:not(.empty-hint):not(.all-option)');
     if (e.key === 'ArrowDown') {
       e.preventDefault(); highlightedIdx = Math.min(highlightedIdx + 1, items.length - 1);
       items.forEach((el, i) => el.classList.toggle('highlighted', i === highlightedIdx));
@@ -180,21 +366,42 @@ function comboSetup(inputId, dropId, onChange) {
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (highlightedIdx >= 0 && items[highlightedIdx]) {
-        input.value = items[highlightedIdx].textContent;
+        commit(items[highlightedIdx].textContent);
       }
       hideDropdown();
       onChange(input.value);
     } else if (e.key === 'Escape') {
-      hideDropdown();
+      if (drop.classList.contains('open')) {
+        hideDropdown();
+      } else if (input.value) {
+        commit('');
+      }
     }
   });
 
+  drop.addEventListener('mouseleave', (e) => {
+    if (e.relatedTarget && (input.contains(e.relatedTarget) || e.relatedTarget === bridge)) return;
+    if (input.matches(':hover')) return;
+    scheduleClose();
+  });
+
+  drop.addEventListener('mouseenter', () => {
+    clearTimeout(closeTimer);
+  });
+
   drop.addEventListener('mousedown', (e) => {
+    const rect = drop.getBoundingClientRect();
+    const sbw = drop.offsetWidth - drop.clientWidth || 14;
+    if (e.clientX > rect.right - sbw - 2) return;
     const div = e.target.closest('div');
-    if (div && !div.classList.contains('empty-hint')) {
-      input.value = div.textContent;
+    if (div && div.classList.contains('all-option')) {
+      commit('');
       hideDropdown();
-      onChange(input.value);
+      return;
+    }
+    if (div && !div.classList.contains('empty-hint')) {
+      commit(div.textContent);
+      hideDropdown();
     }
   });
 
@@ -206,114 +413,380 @@ function comboSetup(inputId, dropId, onChange) {
 function applyFilters() {
   filterServer = document.getElementById('filter-server').value;
   filterTopic = document.getElementById('filter-topic').value;
+  updateClearBtn();
+  refresh();
+}
+
+function updateClearBtn() {
+  document.getElementById('btn-clear').hidden = !(filterServer || filterTopic);
+}
+
+function showNewHint() {
+  const hint = document.getElementById('new-hint');
+  hint.textContent = '有 ' + newCount + ' 条新消息，点击刷新';
+  hint.hidden = false;
+}
+
+function loadNew() {
+  document.getElementById('new-hint').hidden = true;
+  refresh();
+}
+
+function refresh() {
+  currentPage = 1;
   loadData();
+  updateOptionsAll();
+}
+
+async function updateOptionsAll() {
+  try {
+    const all = [];
+    let offset = 0;
+    while (true) {
+      const params = new URLSearchParams({ limit: 500 });
+      if (filterServer) params.set('server_name', filterServer);
+      if (filterTopic) params.set('topic', filterTopic);
+      const res = await fetch('/records?' + params.toString() + '&offset=' + offset);
+      if (!res.ok) break;
+      const data = await res.json();
+      all.push(...data.records);
+      if (all.length >= data.total || data.records.length === 0) break;
+      offset += data.records.length;
+    }
+    serverOptions = [...new Set(all.map(r => r.server_name).filter(Boolean))].sort();
+    topicOptions = [...new Set(all.map(r => r.topic).filter(Boolean))].sort();
+    window.dispatchEvent(new CustomEvent('options-updated'));
+  } catch (e) { /* 静默失败，选项保持现状 */ }
 }
 
 async function loadData() {
-  const params = new URLSearchParams({ limit: 100 });
+  if (document.hidden) return;
+  if (currentAbort) currentAbort.abort();
+  const abort = new AbortController();
+  currentAbort = abort;
+  const countLabel = document.getElementById('count-label');
+  if (currentPage === 1 && lastFingerprint) countLabel.textContent = '刷新中...';
+
+  const params = new URLSearchParams({ limit: PAGE, offset: (currentPage - 1) * PAGE });
   if (filterServer) params.set('server_name', filterServer);
   if (filterTopic) params.set('topic', filterTopic);
 
   try {
-    const res = await fetch('/records?' + params.toString());
+    const res = await fetch('/records?' + params.toString(), { signal: abort.signal });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    render(data);
+    updateCount(data.total);
+    updateOptions(data.records);
+
+    if (currentPage === 1) {
+      const fp = fingerprint(data);
+      if (fp !== lastFingerprint) {
+        lastFingerprint = fp;
+        renderCards(data.records);
+      }
+    } else {
+      renderCards(data.records);
+    }
+    renderPager(data.total);
   } catch (e) {
-    document.getElementById('count-label').textContent = '连接失败';
+    if (e.name === 'AbortError') return;
+    countLabel.textContent = '连接失败';
     document.getElementById('status-dot').className = 'dot stopped';
-    document.getElementById('records-body').innerHTML =
-      '<tr><td colspan="7" class="empty-state"><div class="icon">🔌</div><p>无法连接到服务器</p></td></tr>';
+    if (currentPage === 1) {
+      if (!lastFingerprint) renderState('🔌', '无法连接到服务器');
+    } else {
+      document.getElementById('list-footer').innerHTML =
+        '<button class="btn-page" id="btn-retry">加载失败，点击重试</button>';
+    }
+  } finally {
+    if (currentAbort === abort) currentAbort = null;
   }
 }
 
-function render(data) {
-  const total = data.total;
-  document.getElementById('count-label').textContent = '共 ' + total + ' 条';
-  document.getElementById('status-dot').className = 'dot';
+function fingerprint(data) {
+  let s = data.total + '|';
+  for (const r of data.records) {
+    s += r.id + ':' + r.server_name + ':' + r.topic + ':' + r.created_at + ':' +
+         r.mode + ':' + (r.push_to_mqtt ? 1 : 0) + ':' + r.message + ';';
+  }
+  return s;
+}
 
+function updateCount(total) {
+  const countLabel = document.getElementById('count-label');
+  countLabel.textContent = (filterServer || filterTopic) ? '筛选出 ' + total + ' 条' : '共 ' + total + ' 条';
+  document.getElementById('status-dot').className = 'dot';
+  lastTotal = total;
+  newCount = 0;
+  document.getElementById('new-hint').hidden = true;
+}
+
+function updateOptions(records) {
   const allServers = new Set(serverOptions);
   const allTopics = new Set(topicOptions);
-  for (const r of data.records) {
+  for (const r of records) {
     if (r.server_name) allServers.add(r.server_name);
     if (r.topic) allTopics.add(r.topic);
   }
   serverOptions = [...allServers].sort();
   topicOptions = [...allTopics].sort();
+}
 
-  const tbody = document.getElementById('records-body');
-
-  if (total === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">📭</div><p>暂无推送记录</p></td></tr>';
+function renderCards(records) {
+  const list = document.getElementById('card-list');
+  if (records.length === 0) {
+    renderState('📭', (filterServer || filterTopic) ? '无匹配的推送记录' : '暂无推送记录');
     return;
   }
-
-  const showCount = total > 5 ? 5 : total;
-  let html = '';
-  for (let i = 0; i < data.records.length; i++) {
-    const r = data.records[i];
-    const actionBtn = r.push_to_mqtt
-      ? '<button class="btn-repush" onclick="repush(this,\'' + esc(r.server_name) + '\',' + r.id + ')">重新推送</button>'
-      : '-';
-    const hidden = i >= 5 ? ' style="display:none"' : '';
-    html += '<tr' + (i >= 5 ? ' class="more-row"' : '') + hidden + '>' +
-      '<td class="time-cell">' + esc(r.server_name || '-') + '</td>' +
-      '<td><span class="topic-tag">' + esc(r.topic) + '</span></td>' +
-      '<td class="msg-cell">' + renderMd(r.message) + '</td>' +
-      '<td style="text-align:center">' + (r.push_to_mqtt ? '是' : '否') + '</td>' +
-      '<td style="text-align:center"><span class="mode-badge mode-' + (r.mode || 'append') + '">' + (r.mode === 'overwrite' ? '覆盖' : '持续') + '</span></td>' +
-      '<td class="time-cell">' + r.created_at + '</td>' +
-      '<td style="text-align:center">' + actionBtn + '</td>' +
-      '</tr>';
-  }
-  if (total > 5) {
-    html += '<tr id="expand-row"><td colspan="7" style="text-align:center;padding:12px"><button class="btn-expand" onclick="expandAll()">展开全部 (' + (total - 5) + ' 条)</button></td></tr>';
-  }
-  tbody.innerHTML = html;
+  list.innerHTML = records.map(cardHtml).join('');
+  postRender();
 }
 
-function expandAll() {
-  document.querySelectorAll('.more-row').forEach(el => el.style.display = '');
-  document.getElementById('expand-row').style.display = 'none';
+function renderState(icon, text) {
+  document.getElementById('card-list').innerHTML =
+    '<div class="state-card"><div class="icon">' + icon + '</div><p>' + text + '</p></div>';
 }
 
-async function repush(btn, server_name, id) {
-  btn.disabled = true;
-  btn.textContent = '推送中...';
+function cardHtml(r) {
+  const ps = r.push_result || (r.push_to_mqtt ? 'success' : 'skipped');
+  const pushTip = ps === 'success' ? '推送成功，点击重新推送'
+    : ps === 'failed' ? '推送失败，点击重试'
+    : '未推送 MQTT，点击手动推送';
+  return '<div class="card" data-id="' + r.id + '">' +
+    '<div class="card-top">' +
+      '<div class="card-left">' +
+        '<span class="topic-tag" data-filter="topic" title="点击筛选该主题">' + esc(r.topic) + '</span>' +
+        '<span class="mode-badge mode-' + (r.mode || 'append') + '">' + (r.mode === 'overwrite' ? '覆盖' : '持续') + '</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="card-msg">' +
+      '<button class="btn-copy" data-msg="' + esc(r.message) + '" title="复制消息原文">复制</button>' +
+      '<div class="card-msg-inner">' + renderMd(r.topic, r.message) + '</div>' +
+    '</div>' +
+    '<div class="card-meta">' +
+      '<span class="meta-server" data-filter="server" title="点击筛选该服务器">' + esc(r.server_name || '-') + '</span>' +
+      '<span class="meta-time">' + esc(r.created_at) + '</span>' +
+      '<span class="meta-push ' + ps + '" data-repush="1" data-server="' + esc(r.server_name) + '" data-id="' + r.id + '" title="' + pushTip + '">重新推送 MQTT</span>' +
+    '</div>' +
+  '</div>';
+}
+
+function postRender() {
+  document.querySelectorAll('.card').forEach((card, i) => {
+    card.style.animationDelay = (i * 30) + 'ms';
+    const msg = card.querySelector('.card-msg');
+    const inner = msg.querySelector('.card-msg-inner');
+    const id = Number(card.dataset.id);
+    let btn = card.querySelector('.btn-toggle-msg');
+    if (inner.scrollHeight > msg.clientHeight + 2) {
+      msg.classList.add('clamped');
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.className = 'btn-toggle-msg';
+        card.querySelector('.card-meta').appendChild(btn);
+      }
+      const expanded = expandedMsgs.has(id);
+      msg.classList.toggle('expanded', expanded);
+      if (expanded) msg.style.maxHeight = inner.scrollHeight + 'px';
+      btn.textContent = expanded ? '收起' : '展开全文';
+    } else {
+      msg.classList.remove('clamped', 'expanded');
+      msg.style.maxHeight = '';
+      if (btn) btn.remove();
+    }
+  });
+}
+
+function toggleMsg(card) {
+  const msg = card.querySelector('.card-msg');
+  const btn = card.querySelector('.btn-toggle-msg');
+  const id = Number(card.dataset.id);
+  const fullH = msg.scrollHeight;
+  if (msg.classList.contains('expanded')) {
+    msg.style.maxHeight = fullH + 'px';
+    msg.classList.remove('expanded');
+    requestAnimationFrame(() => { msg.style.maxHeight = '240px'; });
+    btn.textContent = '展开全文';
+    expandedMsgs.delete(id);
+  } else {
+    msg.style.maxHeight = '240px';
+    msg.classList.add('expanded');
+    requestAnimationFrame(() => { msg.style.maxHeight = fullH + 'px'; });
+    btn.textContent = '收起';
+    expandedMsgs.add(id);
+  }
+}
+
+function renderPager(total) {
+  const footer = document.getElementById('list-footer');
+  if (total === 0) { footer.innerHTML = ''; return; }
+  const totalPages = Math.max(1, Math.ceil(total / PAGE));
+  let chips = '';
+  if (filterServer) chips += '<span class="pager-chip">服务器: ' + esc(filterServer) + '</span>';
+  if (filterTopic) chips += '<span class="pager-chip">主题: ' + esc(filterTopic) + '</span>';
+  footer.innerHTML =
+    '<div class="pager">' +
+      '<button class="btn-page" id="btn-prev"' + (currentPage <= 1 ? ' disabled' : '') + '>‹ 上一页</button>' +
+      '<span class="pager-info">' + chips + '<span>第 ' + currentPage + ' / ' + totalPages + ' 页 · 共 ' + total + ' 条</span></span>' +
+      '<button class="btn-page" id="btn-next"' + (currentPage >= totalPages ? ' disabled' : '') + '>下一页 ›</button>' +
+    '</div>';
+}
+
+function renderMd(topic, text) {
+  const key = topic + '\u0000' + text;
+  const hit = mdCache.get(key);
+  if (hit !== undefined) return hit;
+  let html;
+  if (window.marked && window.DOMPurify) {
+    try {
+      html = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+    } catch (e) {
+      html = esc(text).replace(/\n/g, '<br>');
+    }
+  } else {
+    html = esc(text).replace(/\n/g, '<br>');
+  }
+  if (mdCache.size > 500) mdCache.clear();
+  mdCache.set(key, html);
+  return html;
+}
+
+function mdToText(text) {
+  if (window.marked && window.DOMPurify) {
+    const div = document.createElement('div');
+    div.innerHTML = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+    return div.textContent;
+  }
+  return text;
+}
+
+function copyTextFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.top = '-100px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+async function copyText(btn) {
+  const old = btn.textContent;
+  const text = mdToText(btn.dataset.msg);
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    ok = true;
+  } catch (e) {
+    ok = copyTextFallback(text);
+  }
+  btn.textContent = ok ? '✓ 已复制' : '复制失败';
+  btn.classList.toggle('copied', ok);
+  setTimeout(() => { btn.textContent = old; btn.classList.remove('copied'); }, 1500);
+}
+
+async function repush(el) {
+  if (el.classList.contains('busy')) return;
+  el.classList.add('busy');
+  el.textContent = '推送中...';
   try {
     const res = await fetch('/api/repush', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ server_name, id }),
+      body: JSON.stringify({ server_name: el.dataset.server, id: Number(el.dataset.id) }),
     });
-    const data = await res.json();
     if (res.ok) {
-      btn.textContent = '已推送';
-      setTimeout(() => { btn.textContent = '重新推送'; btn.disabled = false; }, 2000);
+      el.textContent = '✓ 已推送';
+      el.classList.remove('failed', 'skipped');
+      el.classList.add('success');
+      el.title = '推送成功，点击重新推送';
+      setTimeout(() => { el.textContent = '重新推送 MQTT'; el.classList.remove('busy'); }, 2000);
     } else {
-      btn.textContent = '推送失败';
-      setTimeout(() => { btn.textContent = '重新推送'; btn.disabled = false; }, 3000);
+      el.textContent = '推送失败';
+      el.classList.add('failed');
+      setTimeout(() => { el.textContent = '重新推送 MQTT'; el.classList.remove('busy'); }, 3000);
     }
   } catch (e) {
-    btn.textContent = '请求失败';
-    setTimeout(() => { btn.textContent = '重新推送'; btn.disabled = false; }, 3000);
+    el.textContent = '请求失败';
+    el.classList.add('failed');
+    setTimeout(() => { el.textContent = '重新推送 MQTT'; el.classList.remove('busy'); }, 3000);
   }
 }
 
-function renderMd(text) {
-  return DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+const cardList = document.getElementById('card-list');
+cardList.addEventListener('click', (e) => {
+  const t = e.target;
+  const toggle = t.closest('.btn-toggle-msg');
+  if (toggle) { toggleMsg(toggle.closest('.card')); return; }
+  const copy = t.closest('.btn-copy');
+  if (copy) { copyText(copy); return; }
+  const repushEl = t.closest('[data-repush]');
+  if (repushEl) { repush(repushEl); return; }
+  const filter = t.closest('[data-filter]');
+  if (filter) {
+    const input = document.getElementById(filter.dataset.filter === 'server' ? 'filter-server' : 'filter-topic');
+    input.value = filter.textContent;
+    applyFilters();
+  }
+});
+
+const btnClear = document.getElementById('btn-clear');
+btnClear.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+});
+btnClear.addEventListener('click', () => {
+  const inputs = [document.getElementById('filter-server'), document.getElementById('filter-topic')];
+  for (const input of inputs) {
+    input.value = '';
+    input.classList.remove('has-value');
+    input.closest('.combo').classList.remove('active');
+    input.closest('.combo').querySelector('.combo-clear').hidden = true;
+    input.blur();
+  }
+  document.querySelectorAll('.combo-dropdown').forEach(d => d.classList.remove('open'));
+  document.querySelectorAll('.combo-bridge').forEach(b => b.style.display = 'none');
+  applyFilters();
+});
+
+document.getElementById('list-footer').addEventListener('click', (e) => {
+  const retry = e.target.closest('#btn-retry');
+  if (retry) { loadData(); return; }
+  const prev = e.target.closest('#btn-prev');
+  if (prev && !prev.disabled) { currentPage--; goPage(); return; }
+  const next = e.target.closest('#btn-next');
+  if (next && !next.disabled) { currentPage++; goPage(); }
+});
+
+function goPage() {
+  window.scrollTo({ top: 0 });
+  lastFingerprint = '';
+  loadData();
 }
 
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
+const newHint = document.getElementById('new-hint');
+newHint.addEventListener('click', loadNew);
 
-comboSetup('filter-server', 'drop-server', () => applyFilters());
-comboSetup('filter-topic', 'drop-topic', () => applyFilters());
-loadData();
-setInterval(loadData, 5000);
+const es = new EventSource('/api/events');
+es.onmessage = (e) => {
+  try {
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'new' && lastTotal !== null && ev.total > lastTotal) {
+      newCount = ev.total - lastTotal;
+      showNewHint();
+    }
+  } catch (err) { /* ignore */ }
+};
+
+comboSetup('filter-server', 'drop-server', 'clear-server', () => applyFilters());
+comboSetup('filter-topic', 'drop-topic', 'clear-topic', () => applyFilters());
+refresh();
 </script>
 </body>
 </html>
