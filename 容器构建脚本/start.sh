@@ -15,6 +15,10 @@ if [ ! -f "$DRIVE_DIR/static/index.html" ]; then
     cp "$SRC_DIR/index.html" "$DRIVE_DIR/static/"
 fi
 
+if [ ! -f "$DRIVE_DIR/static/api-docs.html" ]; then
+    cp "$SRC_DIR/api-docs.html" "$DRIVE_DIR/static/"
+fi
+
 # 配置 mosquitto（仅首次创建）
 if [ ! -f $SRC_DIR/mosquitto.conf ]; then
     cat > $SRC_DIR/mosquitto.conf << CONF
