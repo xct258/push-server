@@ -66,7 +66,7 @@ pip3 install fastapi "uvicorn[standard]" paho-mqtt pydantic --break-system-packa
 # 这些脚本在容器启动时被 start.sh 调用
 # --------------------------------------------------
 # 下载容器相关脚本
-for script in main.py index.html; do
+for script in main.py index.html api-docs.html; do
     wget -q --tries=3 -O "/usr/local/bin/${script}" \
         "https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main/容器相关脚本/${script}"
     chmod +x "/usr/local/bin/${script}"
