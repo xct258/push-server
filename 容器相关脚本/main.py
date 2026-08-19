@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 import paho.mqtt.publish as publish
 import asyncio
 import logging
@@ -17,7 +17,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="MQTT 推送中心 API")
+app = FastAPI(title="MQTT 推送中心 API", description="MQTT 推送中心的 HTTP 接口，文档由 OpenAPI 自动生成，访问 /api/docs 查看在线版。")
 
 event_clients: set = set()
 
@@ -29,8 +29,9 @@ def broadcast(event: dict):
         except Exception:
             event_clients.discard(queue)
 
-@app.get("/api/events")
+@app.get("/api/events", summary="SSE 事件流")
 async def event_stream(request: Request):
+    """SSE 事件流：新消息推送后实时收到 {"type":"new","total":N}，15 秒心跳保活"""
     queue = asyncio.Queue()
     event_clients.add(queue)
 
@@ -83,7 +84,7 @@ async def validation_handler(request: Request, exc: RequestValidationError):
         errors.append({"field": field, "message": msg})
     return JSONResponse(status_code=422, content={"code": 422, "errors": errors})
 
-@app.get("/")
+@app.get("/", summary="前端页面")
 async def serve_frontend():
     return FileResponse(os.path.join(BASE_DIR, "static/index.html"))
 
@@ -123,12 +124,12 @@ def all_records_flat():
     return result
 
 class PushRequest(BaseModel):
-    server_name: str
-    topic: str
-    message: str
-    push_to_mqtt: bool
-    msg_type: str = "markdown"
-    mode: str = "append"
+    server_name: str = Field(description="来源服务器名称，记录保存到 push_records/{server_name}.json")
+    topic: str = Field(description="MQTT 主题")
+    message: str = Field(description="消息内容（markdown 格式）")
+    push_to_mqtt: bool = Field(description="是否推送到 MQTT，只允许 true 或 false")
+    msg_type: str = Field("markdown", description='消息类型，固定为 "markdown"')
+    mode: str = Field("append", description='记录模式："append" 持续记录 或 "overwrite" 覆盖同名主题')
 
     @field_validator("push_to_mqtt", mode="before")
     @classmethod
@@ -152,11 +153,12 @@ class PushRequest(BaseModel):
         return v
 
 class RePushRequest(BaseModel):
-    server_name: str
-    id: int
+    server_name: str = Field(description="来源服务器名称")
+    id: int = Field(description="记录 ID（可从 /records 获取）")
 
-@app.post("/api/push")
+@app.post("/api/push", summary="推送消息")
 async def push_to_phone(request: PushRequest):
+    """推送消息：保存记录，可选推送到 MQTT（push_to_mqtt=true 时）"""
     name = request.server_name
     records = load_server(name)
 
@@ -232,8 +234,9 @@ async def push_to_phone(request: PushRequest):
     detail = "消息已投递至 MQTT" if request.push_to_mqtt else "消息已保存，未推送至 MQTT"
     return {"code": 200, "record_id": record["id"], "detail": detail}
 
-@app.post("/api/repush")
+@app.post("/api/repush", summary="重新推送")
 async def repush(request: RePushRequest):
+    """重新推送：将已保存的记录重新推送到 MQTT，成功后记录状态更新为 success"""
     records = load_server(request.server_name)
     target = None
     for r in records:
@@ -258,13 +261,14 @@ async def repush(request: RePushRequest):
         logger.error(f"重新推送失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"重新推送失败: {str(e)}")
 
-@app.get("/records")
+@app.get("/records", summary="查询推送记录")
 async def get_history(
-    server_name: Optional[str] = Query(None, description="按服务器筛选"),
-    topic: Optional[str] = Query(None, description="按主题筛选"),
-    limit: int = Query(100, ge=1, le=500, description="返回条数"),
-    offset: int = Query(0, ge=0, description="偏移量"),
+    server_name: Optional[str] = Query(None, description="按服务器名称精确筛选"),
+    topic: Optional[str] = Query(None, description="按主题模糊筛选（不区分大小写）"),
+    limit: int = Query(100, ge=1, le=500, description="返回条数，最大 500"),
+    offset: int = Query(0, ge=0, description="偏移量，用于分页"),
 ):
+    """查询推送记录：支持按服务器/主题筛选与分页，按创建时间倒序"""
     records = all_records_flat()
 
     if server_name:
@@ -278,9 +282,15 @@ async def get_history(
 
     return {"total": total, "offset": offset, "limit": limit, "records": page}
 
-@app.get("/api/health")
+@app.get("/api/health", summary="健康检查")
 async def health_check():
+    """健康检查：返回 {"status":"running"}"""
     return {"status": "running"}
+
+@app.get("/api/docs", include_in_schema=False)
+async def api_docs_page():
+    """在线 API 文档页面（自动生成，无需手工维护）"""
+    return FileResponse(os.path.join(BASE_DIR, "static/api-docs.html"))
 
 if __name__ == "__main__":
     import uvicorn
