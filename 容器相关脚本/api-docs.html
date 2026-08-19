@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API 使用说明 - MQTT 推送中心</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 24px; }
+.wrap { max-width: 900px; margin: 0 auto; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+h1 { font-size: 20px; color: #e6edf3; }
+header small { color: #8b949e; font-weight: 400; margin-left: 8px; }
+.btn { background: #21262d; border: 1px solid #30363d; color: #58a6ff; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-decoration: none; transition: background .15s; }
+.btn:hover { background: #30363d; color: #79c0ff; }
+.note { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 10px 14px; font-size: 12px; color: #8b949e; margin-bottom: 20px; line-height: 1.6; }
+.api-card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; margin-bottom: 14px; overflow: hidden; animation: in .25s ease backwards; }
+@keyframes in { from { opacity: 0; transform: translateY(6px); } }
+.api-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid #21262d; flex-wrap: wrap; }
+.method { font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 4px; letter-spacing: .5px; }
+.m-get { background: #0d2b1f; color: #3fb950; }
+.m-post { background: #0b2740; color: #58a6ff; }
+.path { font-family: 'SF Mono', 'Menlo', monospace; font-size: 13px; color: #e6edf3; word-break: break-all; }
+.api-head .summary { font-size: 13px; color: #8b949e; margin-left: auto; }
+.api-body { padding: 12px 16px; font-size: 13px; line-height: 1.7; }
+.api-body .desc { color: #8b949e; margin-bottom: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: left; padding: 7px 10px; border: 1px solid #21262d; }
+th { background: #1c2128; color: #8b949e; font-weight: 600; }
+td code { font-family: 'SF Mono', 'Menlo', monospace; color: #79c0ff; background: #1c2128; padding: 1px 5px; border-radius: 3px; }
+.req-yes { color: #f85149; }
+.req-no { color: #8b949e; }
+pre { background: #0b1220; border: 1px solid #21262d; border-radius: 6px; padding: 10px 12px; overflow-x: auto; font-size: 12px; margin-top: 8px; }
+code { font-family: 'SF Mono', 'Menlo', monospace; }
+h3 { font-size: 13px; color: #e6edf3; margin: 12px 0 6px; }
+.loading, .empty { text-align: center; color: #484f58; padding: 48px 0; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>MQTT 推送中心 API<small>使用说明</small></h1>
+  </header>
+  <div class="note">
+    本文档由服务端 OpenAPI 规范<b>自动生成</b>：新增或修改接口后无需手工维护，重启服务并刷新本页即可更新。
+    基础地址：<code>http://&lt;服务器IP&gt;:8383</code> · 接口总数：<span id="total">-</span>
+  </div>
+  <div id="list"><div class="loading">加载中...</div></div>
+</div>
+<script>
+const METHOD_CLS = { get: 'm-get', post: 'm-post' };
+const TYPE_NAME = { string: '字符串', integer: '整数', boolean: '布尔', number: '数字', array: '数组', object: '对象' };
+const TYPE_DEF = { string: '"示例"', integer: '1', boolean: 'true', number: '1.0', array: '[]', object: '{}' };
+const SKIP = ['/openapi.json', '/docs', '/redoc'];
+
+function resolveRef(spec, ref) {
+  return ref.replace(/^#\//, '').split('/').reduce((o, k) => o[k], spec);
+}
+
+function typeName(schema) {
+  if (!schema) return 'any';
+  if (schema.oneOf && schema.oneOf.length) return schema.oneOf.map(t => typeName(t)).join(' / ');
+  if (schema.anyOf && schema.anyOf.length) return schema.anyOf.filter(t => t.type !== 'null').map(t => typeName(t)).join(' / ');
+  return TYPE_NAME[schema.type] || schema.type || 'any';
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function curlExample(method, path, bodySchema) {
+  let cmd = 'curl -X ' + method.toUpperCase() + ' http://&lt;服务器IP&gt;:8383' + path;
+  if (bodySchema && bodySchema.properties) {
+    const lines = Object.entries(bodySchema.properties).map(([k, v]) => {
+      const val = v.default !== undefined ? JSON.stringify(v.default) : (TYPE_DEF[v.type] || '"示例"');
+      return '  "' + k + '": ' + val;
+    });
+    cmd += " -H 'Content-Type: application/json' -d '\\\n" + lines.join(',\n') + "\\\n'";
+  }
+  return cmd;
+}
+
+async function load() {
+  try {
+    const res = await fetch('/openapi.json');
+    const spec = await res.json();
+    const paths = Object.keys(spec.paths).filter(p => !SKIP.includes(p)).sort();
+    document.getElementById('total').textContent = paths.length;
+    const list = document.getElementById('list');
+    if (!paths.length) { list.innerHTML = '<div class="empty">暂无接口</div>'; return; }
+    list.innerHTML = paths.map((path, i) => {
+      const item = Object.entries(spec.paths[path])[0];
+      const method = item[0], api = item[1];
+      const params = (api.parameters || []).filter(p => p.in !== 'header');
+      let html = '<div class="api-card" style="animation-delay:' + (i * 40) + 'ms">' +
+        '<div class="api-head">' +
+          '<span class="method ' + (METHOD_CLS[method] || 'm-post') + '">' + method.toUpperCase() + '</span>' +
+          '<span class="path">' + path + '</span>' +
+          (api.summary ? '<span class="summary">' + esc(api.summary) + '</span>' : '') +
+        '</div><div class="api-body">';
+      if (api.description) html += '<div class="desc">' + esc(api.description) + '</div>';
+      if (params.length) {
+        html += '<h3>参数</h3><table><tr><th>名称</th><th>位置</th><th>类型</th><th>必填</th><th>说明</th></tr>';
+        for (const p of params) {
+          html += '<tr><td><code>' + esc(p.name) + '</code></td><td>' + p.in + '</td><td>' + typeName(p.schema) + '</td>' +
+            '<td class="' + (p.required ? 'req-yes' : 'req-no') + '">' + (p.required ? '是' : '否') + '</td><td>' + esc(p.description || '-') + '</td></tr>';
+        }
+        html += '</table>';
+      }
+      const rb = api.requestBody;
+      let bodySchema = rb && rb.content['application/json'] ? rb.content['application/json'].schema : null;
+      if (bodySchema && bodySchema.$ref) bodySchema = resolveRef(spec, bodySchema.$ref);
+      if (bodySchema && bodySchema.properties) {
+        const req = bodySchema.required || [];
+        html += '<h3>请求体（JSON）</h3><table><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr>';
+        for (const [name, prop] of Object.entries(bodySchema.properties)) {
+          html += '<tr><td><code>' + esc(name) + '</code></td><td>' + typeName(prop) + '</td>' +
+            '<td class="' + (req.includes(name) ? 'req-yes' : 'req-no') + '">' + (req.includes(name) ? '是' : '否') + '</td><td>' + esc(prop.description || '-') + '</td></tr>';
+        }
+        html += '</table><h3>curl 请求示例</h3><pre><code>' + curlExample(method, path, bodySchema) + '</code></pre>';
+      }
+      html += '</div></div>';
+      return html;
+    }).join('');
+  } catch (e) {
+    document.getElementById('list').innerHTML = '<div class="empty">文档加载失败：' + esc(e.message) + '</div>';
+  }
+}
+load();
+</script>
+</body>
+</html>
