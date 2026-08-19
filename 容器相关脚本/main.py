@@ -1,8 +1,9 @@
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 import paho.mqtt.publish as publish
+import asyncio
 import logging
 import json
 import os
@@ -17,6 +18,36 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="MQTT 推送中心 API")
+
+event_clients: set = set()
+
+def broadcast(event: dict):
+    for queue in list(event_clients):
+        try:
+            if queue.empty():
+                queue.put_nowait(event)
+        except Exception:
+            event_clients.discard(queue)
+
+@app.get("/api/events")
+async def event_stream(request: Request):
+    queue = asyncio.Queue()
+    event_clients.add(queue)
+
+    async def gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            event_clients.discard(queue)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError):
@@ -129,6 +160,23 @@ async def push_to_phone(request: PushRequest):
     name = request.server_name
     records = load_server(name)
 
+    if request.push_to_mqtt:
+        try:
+            publish.single(
+                topic=request.topic,
+                payload=request.message.encode('utf-8'),
+                qos=1,
+                hostname=MQTT_BROKER,
+                port=MQTT_PORT,
+            )
+            push_result = "success"
+            logger.info(f"成功推送消息到主题 [{request.topic}]: {request.message}")
+        except Exception as e:
+            push_result = "failed"
+            logger.error(f"推送失败: {str(e)}")
+    else:
+        push_result = "skipped"
+
     if request.mode == "overwrite":
         existing = None
         for r in records:
@@ -142,6 +190,7 @@ async def push_to_phone(request: PushRequest):
                 "topic": request.topic,
                 "message": request.message,
                 "push_to_mqtt": request.push_to_mqtt,
+                "push_result": push_result,
                 "msg_type": request.msg_type,
                 "mode": "overwrite",
                 "created_at": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
@@ -154,6 +203,7 @@ async def push_to_phone(request: PushRequest):
                 "topic": request.topic,
                 "message": request.message,
                 "push_to_mqtt": request.push_to_mqtt,
+                "push_result": push_result,
                 "msg_type": request.msg_type,
                 "mode": "overwrite",
                 "created_at": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
@@ -166,6 +216,7 @@ async def push_to_phone(request: PushRequest):
             "topic": request.topic,
             "message": request.message,
             "push_to_mqtt": request.push_to_mqtt,
+            "push_result": push_result,
             "msg_type": request.msg_type,
             "mode": "append",
             "created_at": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
@@ -176,19 +227,7 @@ async def push_to_phone(request: PushRequest):
             records.pop(0)
 
     save_server(name, records)
-
-    if request.push_to_mqtt:
-        try:
-            publish.single(
-                topic=request.topic,
-                payload=request.message.encode('utf-8'),
-                qos=1,
-                hostname=MQTT_BROKER,
-                port=MQTT_PORT,
-            )
-            logger.info(f"成功推送消息到主题 [{request.topic}]: {request.message}")
-        except Exception as e:
-            logger.error(f"推送失败: {str(e)}")
+    broadcast({"type": "new", "total": len(all_records_flat())})
 
     detail = "消息已投递至 MQTT" if request.push_to_mqtt else "消息已保存，未推送至 MQTT"
     return {"code": 200, "record_id": record["id"], "detail": detail}
@@ -211,6 +250,8 @@ async def repush(request: RePushRequest):
             hostname=MQTT_BROKER,
             port=MQTT_PORT,
         )
+        target["push_result"] = "success"
+        save_server(request.server_name, records)
         logger.info(f"重新推送消息到主题 [{target['topic']}]: {target['message']}")
         return {"code": 200, "detail": "消息已重新推送"}
     except Exception as e:
