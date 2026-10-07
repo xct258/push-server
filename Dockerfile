@@ -1,5 +1,5 @@
-# 使用 Debian 作为基础镜像
-FROM debian
+# 使用 中文Debian 作为基础镜像
+FROM xct258/debian-cn
 
 # --------------------------------------------------
 # GITHUB_USER - GitHub 用户名
@@ -14,23 +14,10 @@ ENV GITHUB_USER=${GITHUB_USER}
 ENV GITHUB_REPO=${GITHUB_REPO}
 
 # --------------------------------------------------
-# 设置中文语言环境和时区
-# LANG=zh_CN.UTF-8     - 中文 UTF-8 编码
-# TZ=Asia/Shanghai     - 中国标准时间（东八区）
-# --------------------------------------------------
-RUN apt-get update && apt-get install -y locales tzdata \
-    # 生成中文 locale（zh_CN.UTF-8）
-    && localedef -i zh_CN -c -f UTF-8 -A /usr/share/locale/locale.alias zh_CN.UTF-8
-
-# 设置环境变量为中文
-ENV LANG=zh_CN.UTF-8
-# 设置时区为上海
-ENV TZ=Asia/Shanghai
-
-# --------------------------------------------------
 # 安装构建依赖并执行初始化脚本
 # --------------------------------------------------
-RUN apt install -y wget \
+RUN apt-get update \
+    && apt-get install -y wget \
     # 创建临时目录（用于存放下载的脚本）
     && mkdir -p /root/tmp \
     # 从 GitHub 下载 init-components.sh
