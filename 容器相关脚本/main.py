@@ -275,16 +275,22 @@ def find_task_by_ref(data: dict, server_name: str, client_ref: str) -> Optional[
     return None
 
 
-def downlink_payload(t: dict) -> dict:
-    """下行报文（v1，字段只增不改，客户端按 task_id 回传）。"""
-    return {
-        "v": 1,
-        "task_id": t["task_id"],
-        "client_ref": t.get("client_ref"),
-        "title": t.get("title") or "",
-        "message": t.get("message") or "",
-        "schedule_at": t.get("schedule_at"),
-    }
+def downlink_topic(t: dict) -> str:
+    """下行主题：base + /{task_id}，身份放主题里，payload 保持纯文本可读。
+
+    客户端订阅 `base/#`，取主题最后一段即 task_id。调试：收不到先看主题拼对没。
+    """
+    base = (t.get("topic") or PUSH_TOPIC_DEFAULT).rstrip("/")
+    return f"{base}/{t['task_id']}"
+
+
+def downlink_text(t: dict) -> str:
+    """下行纯文本：【待办提醒】标题 + 正文；无标题只发正文。"""
+    title = (t.get("title") or "").strip()
+    message = (t.get("message") or "").strip()
+    if title:
+        return f"【待办提醒】{title}\n{message}" if message else f"【待办提醒】{title}"
+    return message
 
 
 def task_view(t: dict) -> dict:
@@ -387,16 +393,16 @@ class FeedbackIn(BaseModel):
 # ---------------------------------------------------------------------------
 
 async def publish_task_downlink(t: dict) -> bool:
-    """到点 publish 下行 JSON；成功 True，异常记日志 False（任务保持 pending 下轮再推）。
+    """到点 publish 下行纯文本到 {base}/{task_id}；成功 True，异常记日志 False（保持 pending 下轮再推）。
 
-    调试：客户端没收到先旁路监听确认：mosquitto_sub -h 127.0.0.1 -t '<topic>'。
+    调试：客户端没收到先旁路监听确认：mosquitto_sub -h 127.0.0.1 -t '<base>/#'。
     """
-    topic = t.get("topic") or PUSH_TOPIC_DEFAULT
+    topic = downlink_topic(t)
     try:
         await asyncio.to_thread(
             publish.single,
             topic=topic,
-            payload=json.dumps(downlink_payload(t), ensure_ascii=False).encode("utf-8"),
+            payload=downlink_text(t).encode("utf-8"),
             qos=1,
             hostname=MQTT_BROKER,
             port=MQTT_PORT,

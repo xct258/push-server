@@ -119,12 +119,17 @@ push-server → TaskOps: POST /api/todos/123/snooze（扩展回写新时间，�
 
 ### 4.3 下行 MQTT（push-server → 客户端，到点 publish）
 
-- 主题：`taskops/todo`（`PUSH_TOPIC` 可配），`qos=1, retained=false`。
-- payload：
+- 主题：`{base}/{task_id}`（如 `taskops/todo/7`，`base` 由任务的 `topic` 字段定，默认 `PUSH_TOPIC`），`qos=1, retained=false`。
+- payload：纯文本（人类可直接读），格式 `【待办提醒】{title}\n{message}`（无标题只发正文）：
 
-```json
-{"v":1,"task_id":7,"client_ref":"todo-123","title":"交电费","message":"…","schedule_at":"2026-10-12T20:30:00+08:00"}
 ```
+【待办提醒】交电费
+主卧电表，户号…
+到期：2026-10-12
+```
+
+- 设计取舍：身份放主题里（客户端取主题最后一段即 `task_id`），正文保持零解析可读；
+  通用 MQTT 客户端订阅 `taskops/todo/#` 肉眼即见人话。普通 `/api/push` 通道保持原文投递，不受影响。
 
 ### 4.4 上行 MQTT 反馈（客户端 → push-server，主通道，需常驻订阅）
 
@@ -223,7 +228,9 @@ pending ──到点publish──▶ sent ──反馈done──▶ done（回�
 
 ## 7. 异常与重试策略
 
-- TaskOps → push-server 投递失败：创建 / 编辑接口直接 502 报错，前端 toast，用户重试（不自动补）。
+- TaskOps → push-server 投递失败：内存改完→先同步→再 commit，失败 rollback + 502，前端 toast，用户重试（不自动补，无孤儿任务）。
+- TaskOps 删除待办：先 cancel 对端任务（失败 502 不删行）；一次性完成：cancel 对端 best-effort（失败只记日志，幽灵推送打到已完成任务时回调是空操作）。
+- 回调重放（`callback_ref` 已见过）：跳过推进、只补同步，防重复顺延。
 - 调度 publish 抛异常（broker 挂了）：本轮跳过 + 日志，任务保持 `pending`，下次唤醒继续。
 - 误唤醒（提前醒 / 事件抖动）：重算 `delay`，仍是未来则继续睡，不空推。
 - 服务关闭：cancel 调度任务，正在进行的 publish 做完当前条目后退出。
@@ -256,7 +263,7 @@ pending ──到点publish──▶ sent ──反馈done──▶ done（回�
 
 ### 阶段二：web-TaskOps
 
-- [ ] `todos` 加列：`push_task_id`、`push_enabled`（最小关联，推送时间以 push-server 为准）。
+- [ ] `todos` 加列：`push_enabled`（开关）、`push_at`（排期展示镜像）、`push_task_id`（回执）、`last_callback_ref`（回调幂等）。
 - [ ] 创建 / 编辑 / 删除待办时同步 `POST/DELETE /api/task`（失败 502 报错）。
 - [ ] `processed` 成功后：循环任务自动 POST 新 `/api/task` 建下一期。
 - [ ] 扩展 `POST /todos/{id}/snooze`：接受 `note` / `push_at` 回写。
@@ -270,9 +277,17 @@ pending ──到点publish──▶ sent ──反馈done──▶ done（回�
 
 ---
 
-## 10. 待完善（TODO）
+## 10. 客户端设计建议（客户端未设计时按此来）
 
-- [ ] MQTT 客户端具体是什么（设备 / APP）？上下行主题最终命名确认。
+- 订阅 `{base}/#`（如 `taskops/todo/#`，QoS 1），payload 直接展示，主题尾段取 `task_id`。
+- 两个按钮：完成 → `{"task_id":N,"action":"done"}`；推迟 → `{"task_id":N,"action":"snooze","snooze_minutes":60}`，
+  发到上行主题（默认 `taskops/feedback`，QoS 1）；点后本地置灰防重复。
+- 每次收到都展示（snooze 后的重推本来就是一条新提醒；QoS 重传的极偶发重复可忽略，不做去重）。
+- APP 类客户端：重连后调 `GET /api/tasks?status=pending` 补拉离线期间错过的提醒。
+
+## 11. 待完善（TODO）
+
+- [ ] MQTT 客户端具体形态（设备 / APP）落地后，确认主题命名与按钮交互细节。
 - [ ] `TASKOPS_BASE_URL` 生产值（隧道域名还是内网 IP）。
 - [ ] 鉴权 token 要不要上？要的话两边配什么值。
 - [ ] `snooze_minutes` 缺省值最终定多少。

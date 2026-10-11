@@ -172,6 +172,33 @@ input:focus-visible { outline: none; }
 .sk-block { height: 72px; margin: 12px 0; border-radius: 8px; }
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 
+.tabs { display: flex; gap: 6px; flex-shrink: 0; }
+.tab-btn { padding: 6px 14px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: var(--text-dim); font-size: 12.5px; cursor: pointer; white-space: nowrap; transition: color .15s, border-color .15s, background .15s; }
+.tab-btn:hover { color: var(--text-hi); border-color: #484f58; }
+.tab-btn.active { background: var(--accent-soft); border-color: rgba(88, 166, 255, .45); color: var(--accent-hi); font-weight: 600; }
+.tab-btn .cnt { font-size: 11px; opacity: .85; }
+.tpills { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.header-filters[hidden], .tpills[hidden] { display: none; }
+.tpill { padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); font-size: 11.5px; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+.tpill:hover { color: var(--text-hi); border-color: #484f58; }
+.tpill.active { background: var(--bg-elev); color: var(--text-hi); border-color: var(--border-strong); }
+.st-badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+.st-pending { background: var(--accent-soft); color: var(--accent-hi); }
+.st-sent { background: var(--orange-soft); color: var(--orange); }
+.st-done { background: var(--green-soft); color: var(--green); }
+.st-cancelled { background: var(--bg-elev); color: var(--text-faint); }
+.task-title { font-weight: 600; color: var(--text-hi); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-actions { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
+.btn-act { padding: 4px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text-dim); transition: color .15s, border-color .15s, background .15s; }
+.btn-act:hover { color: var(--text-hi); border-color: #484f58; }
+.btn-act.done:hover { color: var(--green); border-color: rgba(63, 185, 80, .5); }
+.btn-act.cancel:hover { color: var(--red); border-color: rgba(248, 81, 73, .5); }
+.btn-act.busy { opacity: .6; cursor: default; }
+.meta-cb { color: var(--text-faint); }
+.meta-cb.ok { color: var(--green); }
+.meta-cb.warn { color: var(--orange); }
+.meta-cb.bad { color: var(--red); }
+
 @media (max-width: 960px) {
   .header h1 { flex: 1 1 100%; font-size: 15px; }
 }
@@ -205,7 +232,18 @@ input:focus-visible { outline: none; }
 </head>
 <body>
 <div class="header">
-  <h1>MQTT 推送中心 <small>推送记录</small></h1>
+  <h1>MQTT 推送中心 <small id="view-sub">推送记录</small></h1>
+  <div class="tabs">
+    <button class="tab-btn active" id="tab-records">推送记录</button>
+    <button class="tab-btn" id="tab-tasks">定时任务<span class="cnt" id="task-pending-count"></span></button>
+  </div>
+  <div class="tpills" id="task-pills" hidden>
+    <button class="tpill active" data-tstatus="">全部</button>
+    <button class="tpill" data-tstatus="pending">待推送</button>
+    <button class="tpill" data-tstatus="sent">已发送</button>
+    <button class="tpill" data-tstatus="done">已完成</button>
+    <button class="tpill" data-tstatus="cancelled">已取消</button>
+  </div>
   <div class="header-filters">
     <div class="filter-field">
       <label for="filter-server">服务器</label>
@@ -782,6 +820,12 @@ async function repush(el) {
 const cardList = document.getElementById('card-list');
 cardList.addEventListener('click', (e) => {
   const t = e.target;
+  const tdone = t.closest('[data-tdone]');
+  if (tdone) { taskFeedback(tdone, 'done'); return; }
+  const tsnooze = t.closest('[data-tsnooze]');
+  if (tsnooze) { taskFeedback(tsnooze, 'snooze'); return; }
+  const tcancel = t.closest('[data-tcancel]');
+  if (tcancel) { taskCancel(tcancel); return; }
   const toggle = t.closest('.btn-toggle-msg');
   if (toggle) { toggleMsg(toggle.closest('.card')); return; }
   const copy = t.closest('.btn-copy');
@@ -833,6 +877,175 @@ function goPage() {
 const newHint = document.getElementById('new-hint');
 newHint.addEventListener('click', loadNew);
 
+/* ---------------- 定时任务视图 ---------------- */
+let view = 'records';
+let taskStatus = '';
+let taskTimer = null;
+let lastTasks = [];
+const STATUS_META = {
+  pending: ['待推送', 'st-pending'],
+  sent: ['已发送', 'st-sent'],
+  done: ['已完成', 'st-done'],
+  cancelled: ['已取消', 'st-cancelled'],
+};
+const CB_META = {
+  none: ['未回调', ''],
+  pending: ['回调中', 'warn'],
+  done: ['回调成功', 'ok'],
+  failed: ['回调失败', 'bad'],
+  skipped: ['跳过回调', ''],
+};
+
+function switchView(v) {
+  view = v;
+  document.getElementById('tab-records').classList.toggle('active', v === 'records');
+  document.getElementById('tab-tasks').classList.toggle('active', v === 'tasks');
+  document.getElementById('view-sub').textContent = v === 'tasks' ? '定时任务' : '推送记录';
+  document.querySelector('.header-filters').hidden = v !== 'records';
+  document.getElementById('task-pills').hidden = v !== 'tasks';
+  document.getElementById('btn-clear').hidden = true;
+  document.getElementById('list-footer').innerHTML = '';
+  lastFingerprint = '';
+  if (v === 'tasks') { loadTasks(); startTaskPoll(); }
+  else { stopTaskPoll(); refresh(); }
+}
+
+function startTaskPoll() {
+  stopTaskPoll();
+  taskTimer = setInterval(() => { if (view === 'tasks' && !document.hidden) loadTasks(); }, 10000);
+}
+function stopTaskPoll() {
+  if (taskTimer) { clearInterval(taskTimer); taskTimer = null; }
+}
+
+async function loadTasks() {
+  if (document.hidden || view !== 'tasks') return;
+  const countLabel = document.getElementById('count-label');
+  try {
+    const params = new URLSearchParams({ limit: 200 });
+    if (taskStatus) params.set('status', taskStatus);
+    const res = await fetch('/api/tasks?' + params.toString());
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    lastTasks = data.tasks;
+    const fp = 'tasks|' + data.tasks.map(t => t.task_id + ':' + t.status + ':' + t.schedule_at + ':' + t.updated_at).join(';');
+    if (fp !== lastFingerprint) { lastFingerprint = fp; renderTaskCards(data.tasks); }
+    updateCountdowns();
+    const pend = data.tasks.filter(t => t.status === 'pending').length;
+    countLabel.textContent = taskStatus ? '筛选出 ' + data.tasks.length + ' 个任务' : '共 ' + data.tasks.length + ' 个任务（' + pend + ' 待推送）';
+    document.getElementById('task-pending-count').textContent = pend ? '（' + pend + '）' : '';
+    document.getElementById('status-dot').className = 'dot';
+  } catch (e) {
+    countLabel.textContent = '连接失败';
+    document.getElementById('status-dot').className = 'dot stopped';
+    if (!lastFingerprint) renderState('🔌', '无法连接到服务器');
+  }
+}
+
+function fmtSched(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function countdown(t) {
+  if (t.status !== 'pending') return t.status === 'sent' ? '已发送，待客户端反馈' : '';
+  const ms = new Date(t.schedule_at) - Date.now();
+  if (isNaN(ms)) return '';
+  if (ms <= 0) return '已到点，等待推送';
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d > 0) return '还有 ' + d + ' 天 ' + (h % 24) + ' 时';
+  if (h > 0) return '还有 ' + h + ' 时 ' + (m % 60) + ' 分';
+  if (m > 0) return '还有 ' + m + ' 分';
+  return '还有 ' + Math.floor(ms / 1000) + ' 秒';
+}
+
+function updateCountdowns() {
+  document.querySelectorAll('.card[data-task]').forEach((card) => {
+    const t = lastTasks.find(x => String(x.task_id) === card.dataset.task);
+    const el = card.querySelector('[data-cd]');
+    if (t && el) el.textContent = countdown(t);
+  });
+}
+
+function renderTaskCards(tasks) {
+  if (!tasks.length) {
+    renderState('📭', taskStatus ? '无此状态的定时任务' : '暂无定时任务');
+    return;
+  }
+  document.getElementById('card-list').innerHTML = tasks.map(taskHtml).join('');
+  postRender();
+  updateCountdowns();
+}
+
+function taskHtml(t) {
+  const sm = STATUS_META[t.status] || [t.status, 'st-cancelled'];
+  const cb = CB_META[t.callback] || [t.callback || '-', ''];
+  const cbExtra = (t.callback === 'pending' && t.retry) ? '（重试' + t.retry + '）' : '';
+  const acts = (t.status === 'pending' || t.status === 'sent')
+    ? '<span class="task-actions">' +
+      '<button class="btn-act done" data-tdone="' + t.task_id + '">完成</button>' +
+      '<button class="btn-act" data-tsnooze="' + t.task_id + '" title="推迟60分钟">推迟</button>' +
+      '<button class="btn-act cancel" data-tcancel="' + t.task_id + '" data-ref="' + esc(t.client_ref || '') + '" data-server="' + esc(t.server_name || '') + '">取消</button>' +
+      '</span>' : '';
+  return '<div class="card" data-task="' + t.task_id + '" data-id="' + (1000000 + t.task_id) + '">' +
+    '<div class="card-top"><div class="card-left">' +
+      '<span class="st-badge ' + sm[1] + '">' + sm[0] + '</span>' +
+      '<span class="task-title">' + esc(t.title || t.client_ref || ('#' + t.task_id)) + '</span>' +
+    '</div><span class="meta-time">#' + t.task_id + '</span></div>' +
+    '<div class="card-msg"><button class="btn-copy" data-msg="' + esc(t.message || '') + '">复制</button>' +
+      '<div class="card-msg-inner">' + renderMd(t.topic, t.message || '') + '</div></div>' +
+    '<div class="card-meta">' +
+      '<span class="topic-tag">' + esc(t.topic || '-') + '</span>' +
+      '<span class="meta-server">' + esc(t.client_ref || '-') + '</span>' +
+      '<span class="meta-time">排期 ' + esc(fmtSched(t.schedule_at)) + ' · <span data-cd></span></span>' +
+      '<span class="meta-cb ' + cb[1] + '">' + cb[0] + cbExtra + '</span>' +
+      acts +
+    '</div></div>';
+}
+
+async function taskFeedback(el, action) {
+  const id = el.dataset.tdone || el.dataset.tsnooze;
+  if (!id || el.classList.contains('busy')) return;
+  el.classList.add('busy');
+  const old = el.textContent;
+  el.textContent = '…';
+  try {
+    const res = await fetch('/api/task/' + id + '/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(action === 'snooze' ? { action, snooze_minutes: 60 } : { action }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    lastFingerprint = '';
+    await loadTasks();
+  } catch (e) {
+    el.textContent = '失败';
+    setTimeout(() => { el.textContent = old; el.classList.remove('busy'); }, 1500);
+  }
+}
+
+async function taskCancel(el) {
+  const id = el.dataset.tcancel;
+  if (!id || el.classList.contains('busy')) return;
+  if (!confirm('确定取消该定时任务吗？到点将不再推送。')) return;
+  el.classList.add('busy');
+  const old = el.textContent;
+  el.textContent = '…';
+  try {
+    const params = el.dataset.server ? '?server_name=' + encodeURIComponent(el.dataset.server) : '';
+    const res = await fetch('/api/task/ref/' + encodeURIComponent(el.dataset.ref) + params, { method: 'DELETE' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    lastFingerprint = '';
+    await loadTasks();
+  } catch (e) {
+    el.textContent = '失败';
+    setTimeout(() => { el.textContent = old; el.classList.remove('busy'); }, 1500);
+  }
+}
+
 const es = new EventSource('/api/events');
 es.onmessage = (e) => {
   try {
@@ -846,6 +1059,16 @@ es.onmessage = (e) => {
 
 comboSetup('filter-server', 'drop-server', 'clear-server', () => applyFilters());
 comboSetup('filter-topic', 'drop-topic', 'clear-topic', () => applyFilters());
+document.getElementById('tab-records').addEventListener('click', () => switchView('records'));
+document.getElementById('tab-tasks').addEventListener('click', () => switchView('tasks'));
+document.getElementById('task-pills').addEventListener('click', (e) => {
+  const pill = e.target.closest('[data-tstatus]');
+  if (!pill) return;
+  taskStatus = pill.dataset.tstatus;
+  document.querySelectorAll('#task-pills .tpill').forEach(p => p.classList.toggle('active', p === pill));
+  lastFingerprint = '';
+  loadTasks();
+});
 refresh();
 </script>
 </body>
