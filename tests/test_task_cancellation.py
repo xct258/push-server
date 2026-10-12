@@ -83,7 +83,8 @@ class TaskCancellationTests(unittest.TestCase):
                      patch.object(backend, "_callback_http", return_value={}) as http:
                     asyncio.run(cancel())
                     http.assert_called_once_with(
-                        "PUT", f"{backend.TASKOPS_BASE_URL}/api/todos/123/processed", {"note": "任务已取消"},
+                        "PUT", f"{backend.TASKOPS_BASE_URL}/api/todos/123/processed",
+                        {"action": "cancelled", "note": "任务已取消"},
                     )
                     self.assertEqual(task["callback"], "done")
 
@@ -121,6 +122,17 @@ class TaskCancellationTests(unittest.TestCase):
                     asyncio.run(backend.do_callback(snapshot, "snooze"))
                     http.assert_not_called()
                     self.assertEqual(task["callback"], "none")
+
+    def test_snooze_callback_uses_mqtt_at(self):
+        for source, backend in self.backends:
+            with self.subTest(source=source):
+                task = self.task()
+                with self.storage(backend, [task]), \
+                     patch.object(backend, "_callback_http", return_value={}) as http:
+                    asyncio.run(backend.do_callback(dict(task), "snooze", {"snooze_minutes": 60}))
+                    body = http.call_args.args[2]
+                    self.assertEqual(body["mqtt_at"], task["schedule_at"])
+                    self.assertNotIn("push_at", body)
 
 
 if __name__ == "__main__":

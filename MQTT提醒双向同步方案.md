@@ -158,10 +158,10 @@ push-server → TaskOps: POST /api/todos/123/snooze（扩展回写新时间，�
 - `snooze` → `POST {TASKOPS_BASE}/api/todos/{id}/snooze`，并扩展该接口接受可选字段回写新时间：
 
 ```json
-{"note": "客户端推迟60分钟", "push_at": "2026-10-12T21:30:00+08:00", "callback_ref": "push-7-snooze-2026-10-12T21:30:00+08:00"}
+{"note": "客户端推迟60分钟", "mqtt_at": "2026-10-12T21:30:00+08:00", "callback_ref": "push-7-snooze-2026-10-12T21:30:00+08:00"}
 ```
 
-- MQTT 提醒独立于到期提醒：携带 `push_at` 的回调只更新推送排期，不要求开启 `need_remind`，不改到期日/提醒日，也不再次投递给 push-server。TaskOps 页面不带 `push_at` 的手动推迟仍按天或循环周期顺延。
+- MQTT 推送时间使用 `mqtt_at`：回调只更新 MQTT 精确排期，不修改到期日/提醒日，也不再次投递给 push-server。TaskOps 页面不带 `mqtt_at` 的手动推迟仍按天或循环周期顺延。
 - `callback_ref` 由任务 ID、动作和新排期组成，同一次回调的重试保持一致，TaskOps 用它跳过重复回写。
 - 回调返回 404 表示对应待办已不存在，标为 `skipped` 并停止重试；网络故障及服务端临时错误仍按原规则重试。
 - 回调失败 → 任务记 `callback`=`pending`，回调任务内按 `30s×次数（封顶300s）` 退避重试，最多 10 次后记 `failed` + 日志（实现注：精确唤醒下没有固定“下轮”，故重试内聚在回调任务里）。
@@ -270,10 +270,10 @@ pending ──到点publish──▶ sent ──反馈done──▶ done（回�
 
 ### 阶段二：web-TaskOps
 
-- [ ] `todos` 加列：`push_enabled`（开关）、`push_at`（排期展示镜像）、`push_task_id`（回执）、`last_callback_ref`（回调幂等）。
+- [ ] `todos` 加列：`mqtt_enabled`（开关）、`mqtt_at`（精确排期）、`push_task_id`（回执）、`last_callback_ref`（回调幂等）。
 - [ ] 创建 / 编辑 / 删除待办时同步 `POST/DELETE /api/task`（失败 502 报错）。
 - [ ] `processed` 成功后：循环任务自动 POST 新 `/api/task` 建下一期。
-- [ ] 扩展 `POST /todos/{id}/snooze`：接受 `note` / `push_at` 回写。
+- [ ] 扩展 `POST /todos/{id}/snooze`：接受 `note` / `mqtt_at` 回写。
 - [ ] 前端：MQTT 开关 + 推送时间选择 + 任务状态回显。
 
 ### 阶段三：联调

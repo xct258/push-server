@@ -468,12 +468,12 @@ async def do_callback(task_snapshot: dict, action: str, extra: Optional[dict] = 
         body = None
     elif action == "cancelled":
         method, url = "PUT", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/processed"
-        body = {"note": "任务已取消"}
+        body = {"action": "cancelled", "note": "任务已取消"}
     else:
         method, url = "POST", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/snooze"
         body = {
             "note": f"客户端推迟{(extra or {}).get('snooze_minutes', 60)}分钟",
-            "push_at": task_snapshot.get("schedule_at"),
+            "mqtt_at": task_snapshot.get("schedule_at"),
             "callback_ref": f"push-{task_snapshot['task_id']}-snooze-{task_snapshot.get('schedule_at')}",
         }
     for attempt in range(1, CALLBACK_MAX_RETRY + 1):
