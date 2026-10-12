@@ -83,6 +83,8 @@ push-server → TaskOps: POST /api/todos/123/snooze（扩展回写新时间，�
 用户关闭提醒/删除待办 → TaskOps → DELETE /api/task/ref/todo-123（到点跳过）
 ```
 
+`DELETE /api/task/ref/{client_ref}` 是调用方同步取消，不反向回调 TaskOps；同时清除该任务的待重试/失败回调状态。push 网页手动取消则通过反馈接口发送 `action: cancelled`，回调 TaskOps 的完成接口。
+
 ---
 
 ## 4. 接口契约
@@ -139,6 +141,7 @@ push-server → TaskOps: POST /api/todos/123/snooze（扩展回写新时间，�
 ```json
 {"task_id":7,"action":"done"}
 {"task_id":7,"action":"snooze","snooze_minutes":60}
+{"task_id":7,"action":"cancelled"}
 ```
 
 - `snooze_minutes` 缺省 60，必须为正整数。
@@ -151,12 +154,16 @@ push-server → TaskOps: POST /api/todos/123/snooze（扩展回写新时间，�
 ### 4.6 回调 TaskOps（push-server → TaskOps，异步 + 重试）
 
 - `done` → `PUT {TASKOPS_BASE}/api/todos/{id}/processed`（复用；循环任务自动顺延）。
+- `cancelled` → 同一完成接口，附带 `note: 任务已取消`，用于 push 网页/客户端手动取消。
 - `snooze` → `POST {TASKOPS_BASE}/api/todos/{id}/snooze`，并扩展该接口接受可选字段回写新时间：
 
 ```json
-{"note": "客户端推迟60分钟", "push_at": "2026-10-12T21:30:00+08:00"}
+{"note": "客户端推迟60分钟", "push_at": "2026-10-12T21:30:00+08:00", "callback_ref": "push-7-snooze-2026-10-12T21:30:00+08:00"}
 ```
 
+- MQTT 提醒独立于到期提醒：携带 `push_at` 的回调只更新推送排期，不要求开启 `need_remind`，不改到期日/提醒日，也不再次投递给 push-server。TaskOps 页面不带 `push_at` 的手动推迟仍按天或循环周期顺延。
+- `callback_ref` 由任务 ID、动作和新排期组成，同一次回调的重试保持一致，TaskOps 用它跳过重复回写。
+- 回调返回 404 表示对应待办已不存在，标为 `skipped` 并停止重试；网络故障及服务端临时错误仍按原规则重试。
 - 回调失败 → 任务记 `callback`=`pending`，回调任务内按 `30s×次数（封顶300s）` 退避重试，最多 10 次后记 `failed` + 日志（实现注：精确唤醒下没有固定“下轮”，故重试内聚在回调任务里）。
 - 鉴权（可选）：回调与投递统一带 `X-Callback-Token` / `Authorization`，两边对等配置（见第 6 节）。
 

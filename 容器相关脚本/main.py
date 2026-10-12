@@ -12,6 +12,7 @@ import os
 import re
 import threading
 import urllib.request
+import urllib.error
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
@@ -371,14 +372,14 @@ class TaskUpdate(BaseModel):
 
 
 class FeedbackIn(BaseModel):
-    action: str = Field(description='反馈动作：done（完成）或 snooze（推迟）')
+    action: str = Field(description='反馈动作：done（完成）、snooze（推迟）或 cancelled（取消）')
     snooze_minutes: int = Field(default=60, description="推迟分钟数，仅 snooze 有效")
 
     @field_validator("action")
     @classmethod
     def check_action(cls, v):
-        if v not in ("done", "snooze"):
-            raise ValueError('action 只能是 "done" 或 "snooze"')
+        if v not in ("done", "snooze", "cancelled"):
+            raise ValueError('action 只能是 "done"、"snooze" 或 "cancelled"')
         return v
 
     @field_validator("snooze_minutes")
@@ -465,13 +466,20 @@ async def do_callback(task_snapshot: dict, action: str, extra: Optional[dict] = 
     if action == "done":
         method, url = "PUT", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/processed"
         body = None
+    elif action == "cancelled":
+        method, url = "PUT", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/processed"
+        body = {"note": "任务已取消"}
     else:
         method, url = "POST", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/snooze"
         body = {
             "note": f"客户端推迟{(extra or {}).get('snooze_minutes', 60)}分钟",
             "push_at": task_snapshot.get("schedule_at"),
+            "callback_ref": f"push-{task_snapshot['task_id']}-snooze-{task_snapshot.get('schedule_at')}",
         }
     for attempt in range(1, CALLBACK_MAX_RETRY + 1):
+        current = find_task(load_tasks(), task_snapshot["task_id"])
+        if action != "cancelled" and current and current.get("status") == "cancelled":
+            return  # 调用方已取消，停止旧的完成/推迟回调。
         try:
             await asyncio.to_thread(_callback_http, method, url, body)
             logger.info(f"任务 #{task_snapshot.get('task_id')} 回调 TaskOps {action} 成功")
@@ -480,6 +488,13 @@ async def do_callback(task_snapshot: dict, action: str, extra: Optional[dict] = 
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            current = find_task(load_tasks(), task_snapshot["task_id"])
+            if action != "cancelled" and current and current.get("status") == "cancelled":
+                return
+            if isinstance(e, urllib.error.HTTPError) and e.code == 404:
+                logger.info(f"任务 #{task_snapshot.get('task_id')} 对应待办已不存在，停止回调")
+                _mark_callback(task_snapshot["task_id"], "skipped", 0)
+                return
             logger.error(f"任务 #{task_snapshot.get('task_id')} 回调失败（第{attempt}次）：{e}")
             _mark_callback(task_snapshot["task_id"], "pending", attempt)
             await asyncio.sleep(min(30 * attempt, 300))
@@ -501,6 +516,8 @@ async def apply_feedback(task_id: int, action: str, snooze_minutes: int = 60) ->
         return {"code": 200, "task_id": task_id, "status": t["status"], "detail": "任务已终态，忽略"}
     if action == "done":
         t["status"] = "done"
+    elif action == "cancelled":
+        t["status"] = "cancelled"
     elif action == "snooze":
         minutes = max(int(snooze_minutes or 60), 1)
         try:
@@ -510,7 +527,7 @@ async def apply_feedback(task_id: int, action: str, snooze_minutes: int = 60) ->
         t["schedule_at"] = (base + timedelta(minutes=minutes)).isoformat()
         t["status"] = "pending"
     else:
-        return {"code": 400, "detail": 'action 只能是 "done" 或 "snooze"'}
+        return {"code": 400, "detail": 'action 只能是 "done"、"snooze" 或 "cancelled"'}
     t["callback"] = "none"
     t["retry"] = 0
     t["updated_at"] = _now_str()
@@ -867,23 +884,32 @@ async def cancel_task_by_ref(
     request: Request,
     server_name: Optional[str] = Query(None, description="同 client_ref 多服务复用时限定服务"),
 ):
-    """非终态任务标 cancelled（到点跳过）；sent 的取消只影响回调与重查，已发出的不撤回。
+    """调用方同步取消：非终态任务标 cancelled，不反向回调调用方。
 
     调试：取消完还推，先查 status 列，再查是不是 client_ref 写错了。
     """
     _check_push_token(request)
     data = load_tasks()
     n = 0
+    changed = False
     for t in data["tasks"]:
         if t.get("client_ref") != client_ref:
             continue
         if server_name and t.get("server_name") != server_name:
             continue
+        task_changed = False
         if t.get("status") not in TERMINAL_STATUS:
             t["status"] = "cancelled"
-            t["updated_at"] = _now_str()
             n += 1
-    if n:
+            task_changed = True
+        if t.get("callback") in ("pending", "failed") or t.get("retry", 0):
+            t["callback"] = "none"
+            t["retry"] = 0
+            task_changed = True
+        if task_changed:
+            t["updated_at"] = _now_str()
+            changed = True
+    if changed:
         save_tasks(data)
     return {"code": 200, "cancelled": n}
 

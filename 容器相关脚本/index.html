@@ -1035,8 +1035,11 @@ async function taskCancel(el) {
   const old = el.textContent;
   el.textContent = '…';
   try {
-    const params = el.dataset.server ? '?server_name=' + encodeURIComponent(el.dataset.server) : '';
-    const res = await fetch('/api/task/ref/' + encodeURIComponent(el.dataset.ref) + params, { method: 'DELETE' });
+    const res = await fetch('/api/task/' + encodeURIComponent(id) + '/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancelled' }),
+    });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     lastFingerprint = '';
     await loadTasks();
