@@ -6,18 +6,11 @@ SRC_DIR=/usr/local/bin
 MQTT_WS_PORT=${MQTT_WS_PORT:-9001}
 UVICORN_PORT=${UVICORN_PORT:-8383}
 
-# 如果挂载卷为空，从镜像复制应用文件
-if [ ! -f "$DRIVE_DIR/main.py" ]; then
-    cp "$SRC_DIR/main.py" "$DRIVE_DIR/"
-fi
+# 每次启动都同步镜像中的应用代码，避免旧挂载卷继续运行旧版本。
+cp "$SRC_DIR/main.py" "$DRIVE_DIR/"
 mkdir -p "$DRIVE_DIR/static"
-if [ ! -f "$DRIVE_DIR/static/index.html" ]; then
-    cp "$SRC_DIR/index.html" "$DRIVE_DIR/static/"
-fi
-
-if [ ! -f "$DRIVE_DIR/static/api-docs.html" ]; then
-    cp "$SRC_DIR/api-docs.html" "$DRIVE_DIR/static/"
-fi
+cp "$SRC_DIR/index.html" "$DRIVE_DIR/static/"
+cp "$SRC_DIR/api-docs.html" "$DRIVE_DIR/static/"
 
 # 配置 mosquitto（仅首次创建）
 if [ ! -f $SRC_DIR/mosquitto.conf ]; then
