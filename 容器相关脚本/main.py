@@ -31,6 +31,8 @@ async def lifespan(app: FastAPI):
     global _scheduler_wake
     if not os.path.exists(TASKS_PATH):
         save_tasks(_empty_tasks())
+    else:
+        save_tasks(load_tasks())
     wake = asyncio.Event()
     _scheduler_wake = wake
     fb_queue: asyncio.Queue = asyncio.Queue()
@@ -38,13 +40,14 @@ async def lifespan(app: FastAPI):
     subscriber = start_feedback_subscriber(loop, fb_queue)
     consumer = asyncio.create_task(feedback_consumer_loop(fb_queue))
     sched = asyncio.create_task(task_scheduler_loop(wake))
+    sync = asyncio.create_task(schedule_sync_loop())
     try:
         yield
     finally:
-        for t in (consumer, sched):
+        for t in (consumer, sched, sync):
             t.cancel()
         try:
-            await asyncio.gather(consumer, sched, return_exceptions=True)
+            await asyncio.gather(consumer, sched, sync, return_exceptions=True)
         except Exception:
             pass
         if subscriber is not None:
@@ -136,6 +139,9 @@ TASKOPS_TOKEN = os.environ.get("TASKOPS_TOKEN", "")
 PUSH_SERVER_TOKEN = os.environ.get("PUSH_SERVER_TOKEN", "")
 PUSH_TOPIC_DEFAULT = os.environ.get("PUSH_TOPIC", "taskops/todo")
 FEEDBACK_TOPIC = os.environ.get("FEEDBACK_TOPIC", "taskops/feedback")
+SCHEDULE_TOPIC = os.environ.get("SCHEDULE_TOPIC", "taskops/schedule").rstrip("/")
+SCHEDULE_TERMINAL_DAYS = 7
+_schedule_wake = None
 TASK_RESYNC_INTERVAL = int(os.environ.get("TASK_RESYNC_INTERVAL", "300"))  # 兜底重载秒数
 TASK_MIN_WAIT = 5  # 唤醒重算后最小休眠（防失败任务空转）
 CALLBACK_MAX_RETRY = 10
@@ -223,12 +229,95 @@ def save_tasks(data: dict) -> None:
     约定：先落盘再置位，调度循环按“先 clear 再 load”顺序，保证变更不丢（见 task_scheduler_loop）。
     """
     with tasks_lock:
+        previous = {}
+        if os.path.exists(TASKS_PATH):
+            with open(TASKS_PATH, encoding="utf-8") as f:
+                previous = json.load(f)
+        old_tasks = {t["task_id"]: t for t in previous.get("tasks", [])}
+        data["snapshot_version"] = int(previous.get("snapshot_version", 0))
+        for task in data["tasks"]:
+            old = old_tasks.get(task["task_id"])
+            if old is None or not old.get("revision") or schedule_signature(task) != schedule_signature(old):
+                data["snapshot_version"] += 1
+                task["revision"] = int((old or {}).get("revision", 0)) + 1
+                task["snapshot_version"] = data["snapshot_version"]
+                source = task.pop("_change_source", {"source": "taskops"})
+                action = task.pop("_change_action", None) or (task["status"] if task["status"] in TERMINAL_STATUS else "updated" if old else "created")
+                task["change"] = {**source, "action": action,
+                    "event_id": f"task-{task['task_id']}-revision-{task['revision']}",
+                    "changed_at": _now_shanghai().isoformat()}
+                task["terminal_at"] = _now_shanghai().isoformat() if task["status"] in TERMINAL_STATUS else None
+                task["schedule_sync_revision"] = 0
+                task["schedule_sync_retry"] = 0
+                task["schedule_sync_next_at"] = None
         data["version"] = int(data.get("version", 0)) + 1
         tmp = TASKS_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, TASKS_PATH)
     _wake_scheduler()
+    if _schedule_wake is not None:
+        _schedule_wake.set()
+
+
+def schedule_signature(task):
+    return tuple(task.get(key) for key in ("server_name", "client_ref", "title", "message", "schedule_at", "topic", "recurring")) + (
+        task.get("status") if task.get("status") in TERMINAL_STATUS else "active",)
+
+
+def schedule_message(task):
+    return {"schema_version": 1, **{key: task.get(key) for key in (
+        "task_id", "client_ref", "server_name", "revision", "snapshot_version", "schedule_at", "title", "message", "change")},
+        "status": task["status"] if task["status"] in TERMINAL_STATUS else "active",
+        "updated_at": (task.get("change") or {}).get("changed_at", task.get("updated_at"))}
+
+
+async def schedule_sync_loop():
+    """持久化待发布版本；启动补发，发布失败退避，每五分钟补发以恢复 broker。"""
+    global _schedule_wake
+    _schedule_wake = asyncio.Event()
+    republish_at = 0
+    try:
+        while True:
+            _schedule_wake.clear()
+            now = _now_shanghai()
+            refresh = asyncio.get_running_loop().time() >= republish_at
+            if refresh:
+                republish_at = asyncio.get_running_loop().time() + 300
+            for task in load_tasks()["tasks"]:
+                expired = task.get("terminal_at") and now - parse_schedule_at(task["terminal_at"]) > timedelta(days=SCHEDULE_TERMINAL_DAYS)
+                target = -1 if expired else int(task.get("revision", 0))
+                if not refresh and task.get("schedule_sync_revision") == target:
+                    continue
+                if task.get("schedule_sync_next_at") and parse_schedule_at(task["schedule_sync_next_at"]) > now:
+                    continue
+                try:
+                    await asyncio.to_thread(publish.single, topic=f"{SCHEDULE_TOPIC}/{task['task_id']}",
+                        payload=b"" if expired else json.dumps(schedule_message(task), ensure_ascii=False).encode(),
+                        qos=1, retain=True, hostname=MQTT_BROKER, port=MQTT_PORT)
+                    error = None
+                except Exception as exc:
+                    error = str(exc)
+                    logger.error(f"任务 #{task['task_id']} 计划发布失败：{exc}")
+                data = load_tasks()
+                current = find_task(data, task["task_id"])
+                if current is None or current.get("revision") != task.get("revision"):
+                    continue
+                retry = int(current.get("schedule_sync_retry", 0)) + 1 if error else 0
+                current["schedule_sync_retry"] = retry
+                current["schedule_sync_error"] = error
+                current["schedule_sync_next_at"] = (now + timedelta(seconds=min(5 * 2 ** min(retry, 6), 300))).isoformat() if error else None
+                if not error:
+                    current["schedule_sync_revision"] = target
+                save_tasks(data)
+            # save_tasks 唤醒自身的信号已消费，避免自旋。
+            _schedule_wake.clear()
+            try:
+                await asyncio.wait_for(_schedule_wake.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        _schedule_wake = None
 
 
 def _wake_scheduler() -> None:
@@ -270,7 +359,7 @@ def find_task(data: dict, task_id: int) -> Optional[dict]:
 
 
 def find_task_by_ref(data: dict, server_name: str, client_ref: str) -> Optional[dict]:
-    for t in data["tasks"]:
+    for t in reversed(data["tasks"]):
         if t.get("server_name") == server_name and t.get("client_ref") == client_ref:
             return t
     return None
@@ -310,6 +399,10 @@ def task_view(t: dict) -> dict:
         "retry": int(t.get("retry", 0)),
         "created_at": t.get("created_at"),
         "updated_at": t.get("updated_at"),
+        "revision": t.get("revision", 0),
+        "schedule_sync_revision": t.get("schedule_sync_revision", 0),
+        "schedule_sync_retry": t.get("schedule_sync_retry", 0),
+        "schedule_sync_error": t.get("schedule_sync_error"),
     }
 
 class PushRequest(BaseModel):
@@ -374,6 +467,10 @@ class TaskUpdate(BaseModel):
 class FeedbackIn(BaseModel):
     action: str = Field(description='反馈动作：done（完成）、snooze（推迟）或 cancelled（取消）')
     snooze_minutes: int = Field(default=60, description="推迟分钟数，仅 snooze 有效")
+    revision: Optional[int] = Field(default=None, ge=1)
+    request_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    device_id: Optional[str] = Field(default=None, max_length=128)
+    device_name: Optional[str] = Field(default=None, max_length=128)
 
     @field_validator("action")
     @classmethod
@@ -465,10 +562,11 @@ async def do_callback(task_snapshot: dict, action: str, extra: Optional[dict] = 
         return
     if action == "done":
         method, url = "PUT", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/processed"
-        body = None
+        body = {"action": "done", "callback_ref": f"push-{task_snapshot['task_id']}-done-{task_snapshot.get('revision', 0)}"}
     elif action == "cancelled":
         method, url = "PUT", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/processed"
-        body = {"action": "cancelled", "note": "任务已取消"}
+        body = {"action": "cancelled", "note": "任务已取消",
+                "callback_ref": f"push-{task_snapshot['task_id']}-cancelled-{task_snapshot.get('revision', 0)}"}
     else:
         method, url = "POST", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/snooze"
         body = {
@@ -502,7 +600,8 @@ async def do_callback(task_snapshot: dict, action: str, extra: Optional[dict] = 
     logger.error(f"任务 #{task_snapshot.get('task_id')} 回调达最大重试，需人工对账")
 
 
-async def apply_feedback(task_id: int, action: str, snooze_minutes: int = 60) -> dict:
+async def apply_feedback(task_id: int, action: str, snooze_minutes: int = 60,
+                         revision=None, request_id=None, device_id=None, device_name=None) -> dict:
     """反馈统一入口（MQTT 上行与 REST 共用）：改状态 + 落盘 + 起回调任务。
 
     返回 {"code":200,...} 或 {"code":404/400,...}，调用方自行映射（REST 抛错 / MQTT 记日志）。
@@ -512,6 +611,14 @@ async def apply_feedback(task_id: int, action: str, snooze_minutes: int = 60) ->
     t = find_task(data, task_id)
     if not t:
         return {"code": 404, "detail": f"任务 #{task_id} 不存在"}
+    receipts = data.setdefault("feedback_receipts", {})
+    receipt_key = json.dumps([task_id, device_id, request_id]) if request_id else None
+    if receipt_key and receipt_key in receipts:
+        return receipts[receipt_key]
+    if revision is not None and revision != t.get("revision", 0):
+        t["schedule_sync_revision"] = 0  # 上行冲突后重新广播当前计划。
+        save_tasks(data)
+        return {"code": 409, "detail": "计划版本已变化，请同步最新状态", "task": schedule_message(t)}
     if t.get("status") in TERMINAL_STATUS:
         return {"code": 200, "task_id": task_id, "status": t["status"], "detail": "任务已终态，忽略"}
     if action == "done":
@@ -531,11 +638,17 @@ async def apply_feedback(task_id: int, action: str, snooze_minutes: int = 60) ->
     t["callback"] = "none"
     t["retry"] = 0
     t["updated_at"] = _now_str()
+    t["_change_action"] = action
+    t["_change_source"] = {"source": "device" if device_id else "push_web",
+                           "device_id": device_id, "device_name": device_name}
+    result = {"code": 200, "task_id": task_id, "status": t["status"], "schedule_at": t.get("schedule_at"), "revision": int(t.get("revision", 0)) + 1}
+    if receipt_key:
+        receipts[receipt_key] = result
+    save_tasks(data)  # 计划变化与请求回执同一次原子落盘。
     snapshot = dict(t)
-    save_tasks(data)  # 版本号+1 并唤醒调度（snooze 后重算 delay）
     asyncio.create_task(do_callback(snapshot, action, {"snooze_minutes": snooze_minutes}))
     logger.info(f"任务 #{task_id} 反馈 {action} 已受理，状态={t['status']}")
-    return {"code": 200, "task_id": task_id, "status": t["status"], "schedule_at": t.get("schedule_at")}
+    return result
 
 
 async def task_scheduler_loop(wake: asyncio.Event) -> None:
@@ -574,11 +687,14 @@ async def task_scheduler_loop(wake: asyncio.Event) -> None:
         changed = False
         for t in due:
             if await publish_task_downlink(t):
-                t["status"] = "sent"
-                t["updated_at"] = _now_str()
-                changed = True
+                latest = load_tasks()
+                current = find_task(latest, t["task_id"])
+                if current and current.get("status") == "pending" and current.get("revision") == t.get("revision"):
+                    current["status"] = "sent"
+                    current["updated_at"] = _now_str()
+                    save_tasks(latest)
+                    changed = True
         if changed:
-            save_tasks(data)
             continue  # 落盘后直接重算（save 已唤醒，下一轮顶部 clear 掉）
         timeout = float(TASK_RESYNC_INTERVAL) if earliest is None else min(
             max((earliest - _now_shanghai()).total_seconds(), float(TASK_MIN_WAIT)),
@@ -602,7 +718,9 @@ async def feedback_consumer_loop(queue: asyncio.Queue) -> None:
             logger.error(f"上行反馈格式非法，已丢弃：{obj}")
             continue
         try:
-            res = await apply_feedback(task_id, action, minutes)
+            feedback = FeedbackIn.model_validate(obj)
+            res = await apply_feedback(task_id, action, minutes, feedback.revision, feedback.request_id,
+                                       feedback.device_id, feedback.device_name)
             if res.get("code") != 200:
                 logger.error(f"上行反馈处理失败：{res}")
         except asyncio.CancelledError:
@@ -807,6 +925,11 @@ async def upsert_task(body: TaskCreate, request: Request):
         raise HTTPException(status_code=400, detail="Invalid schedule_at format")
     data = load_tasks()
     t = find_task_by_ref(data, body.server_name, body.client_ref)
+    if t and t.get("status") in TERMINAL_STATUS:
+        t = None  # 新一期独立 ID，旧设备反馈不能作用于下一期。
+    if t and (t.get("title"), t.get("message"), t.get("schedule_at"), bool(t.get("recurring")), t.get("topic")) == (
+            body.title, body.message, when.isoformat(), bool(body.recurring), body.topic or PUSH_TOPIC_DEFAULT):
+        return {"code": 200, "task_id": t["task_id"], "action": "unchanged", "task": task_view(t)}
     if t:
         if body.topic:
             t["topic"] = body.topic
@@ -878,6 +1001,50 @@ async def update_task(task_id: int, body: TaskUpdate, request: Request):
     return {"code": 200, "task_id": task_id, "task": task_view(t)}
 
 
+class TaskStateIn(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value):
+        if value not in TERMINAL_STATUS:
+            raise ValueError("status 必须是 done 或 cancelled")
+        return value
+
+
+@app.put("/api/task/{task_id}/state", summary="TaskOps 同步结束状态，不反向回调")
+async def sync_task_state(task_id: int, body: TaskStateIn, request: Request):
+    _check_push_token(request)
+    data = load_tasks()
+    task = find_task(data, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task["status"] not in TERMINAL_STATUS:
+        task["status"] = body.status
+        task["callback"] = "none"
+        task["retry"] = 0
+        task["updated_at"] = _now_str()
+        save_tasks(data)
+    return {"code": 200, "task": schedule_message(task)}
+
+
+@app.get("/api/schedules", summary="完整提醒计划快照（不分页、不截断）")
+async def list_schedules(request: Request, server_name: Optional[str] = Query(None)):
+    _check_push_token(request)
+    data = load_tasks()
+    now = _now_shanghai()
+    tasks, terminal = [], []
+    for task in data["tasks"]:
+        if server_name and task.get("server_name") != server_name:
+            continue
+        if task["status"] not in TERMINAL_STATUS:
+            tasks.append(schedule_message(task))
+        elif task.get("terminal_at") and now - parse_schedule_at(task["terminal_at"]) <= timedelta(days=SCHEDULE_TERMINAL_DAYS):
+            terminal.append(schedule_message(task))
+    return {"schema_version": 1, "snapshot_version": data.get("snapshot_version", 0),
+            "server_time": now.isoformat(), "tasks": tasks, "terminal_tasks": terminal}
+
+
 @app.delete("/api/task/ref/{client_ref}", summary="按调用方标识取消任务")
 async def cancel_task_by_ref(
     client_ref: str,
@@ -938,11 +1105,14 @@ async def feedback_task(task_id: int, body: FeedbackIn, request: Request):
     调试：done 后 TaskOps 没变看任务 callback 列；snooze 后看 schedule_at 是否顺延。
     """
     _check_push_token(request)
-    res = await apply_feedback(task_id, body.action, body.snooze_minutes)
+    res = await apply_feedback(task_id, body.action, body.snooze_minutes, body.revision, body.request_id,
+                               body.device_id, body.device_name)
     if res.get("code") == 404:
         raise HTTPException(status_code=404, detail=res.get("detail"))
     if res.get("code") == 400:
         raise HTTPException(status_code=400, detail=res.get("detail"))
+    if res.get("code") == 409:
+        return JSONResponse(status_code=409, content=res)
     return res
 
 
