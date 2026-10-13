@@ -115,23 +115,3 @@ GET /records?server_name=server-1&topic=test&limit=50&offset=0
 ## 数据存储
 
 推送记录以 JSON 文件形式持久化在工作目录下，按 `server_name` 分文件存储，每个服务器最多保留 100 条记录。
-
-## 提醒计划与多设备同步
-
-TaskOps 注册或修改任务后立即发布 JSON 计划到 `taskops/schedule/{task_id}`，QoS 1、retain=true。到点仍通过原有主题发送正常纯文本提醒。通过 `SCHEDULE_TOPIC` 可配置计划主题基础路径。
-
-计划包含 `task_id`、`revision`、`snapshot_version`、`status`、`schedule_at`、标题、内容及 `change`。`change` 包含事件 ID、操作来源、设备 ID/名称和变更时间。完成/取消也广播 retained 状态，保留 7 天；客户端据此撤回旧通知并显示状态变更通知。同一期的版本更新不会改变任务 ID，新一期重新注册终态任务会分配新 ID。
-
-- `GET /api/schedules?server_name=taskops`：完整快照，不截断，返回有效 `tasks` 和最近 7 天的 `terminal_tasks`。
-- `PUT /api/task/{task_id}/state`：TaskOps 同步 `{"status":"done"}` 或 `{"status":"cancelled"}`，广播但不反向回调。
-- 反馈接口和 MQTT 上行支持可选 `revision`、`request_id`、`device_id`、`device_name`。新客户端应同时提供 revision 和 request_id；重复 request_id 返回原结果，过时 revision 返回 409 和当前计划（MQTT 上行重新广播当前计划）。
-
-示例反馈：
-
-```json
-{"task_id":7,"revision":3,"request_id":"phone-a-request-1","device_id":"phone-a","device_name":"手机 A","action":"snooze","snooze_minutes":60}
-```
-
-HTTP 写接口和快照使用配置的 `X-Push-Token`。MQTT 上行沿用现有订阅机制，设备身份信息用于展示，不用于鉴权。
-
-发布失败持久化重试状态；服务启动补发，每 5 分钟再次发布以恢复 broker 中丢失的 retained 数据。管理页显示计划版本和发布状态。移动端的本地闹钟、通知撤回、状态通知、事件去重由客户端实现，详见《移动端本地闹钟同步实施计划.md》。

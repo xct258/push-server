@@ -928,7 +928,7 @@ async function loadTasks() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     lastTasks = data.tasks;
-    const fp = 'tasks|' + JSON.stringify(data.tasks);
+    const fp = 'tasks|' + data.tasks.map(t => t.task_id + ':' + t.status + ':' + t.schedule_at + ':' + t.updated_at).join(';');
     if (fp !== lastFingerprint) { lastFingerprint = fp; renderTaskCards(data.tasks); }
     updateCountdowns();
     const pend = data.tasks.filter(t => t.status === 'pending').length;
@@ -1001,8 +1001,7 @@ function taskHtml(t) {
       '<span class="topic-tag">' + esc(t.topic || '-') + '</span>' +
       '<span class="meta-server">' + esc(t.client_ref || '-') + '</span>' +
       '<span class="meta-time">排期 ' + esc(fmtSched(t.schedule_at)) + ' · <span data-cd></span></span>' +
-       '<span class="meta-cb ' + cb[1] + '">' + cb[0] + cbExtra + '</span>' +
-       '<span class="meta-time">计划 v' + (t.revision || 0) + ' · ' + (t.schedule_sync_revision === -1 ? '保留消息已清理' : t.schedule_sync_revision === t.revision ? '已发布' : t.schedule_sync_error ? '发布重试中' : '待发布') + '</span>' +
+      '<span class="meta-cb ' + cb[1] + '">' + cb[0] + cbExtra + '</span>' +
       acts +
     '</div></div>';
 }
@@ -1013,14 +1012,11 @@ async function taskFeedback(el, action) {
   el.classList.add('busy');
   const old = el.textContent;
   el.textContent = '…';
-  const task = lastTasks.find(t => String(t.task_id) === String(id));
-  const feedback = { action, revision: task && task.revision || null, request_id: Date.now() + '-' + Math.random().toString(36).slice(2) };
-  if (action === 'snooze') feedback.snooze_minutes = 60;
   try {
     const res = await fetch('/api/task/' + id + '/feedback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(feedback),
+      body: JSON.stringify(action === 'snooze' ? { action, snooze_minutes: 60 } : { action }),
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     lastFingerprint = '';
@@ -1042,7 +1038,7 @@ async function taskCancel(el) {
     const res = await fetch('/api/task/' + encodeURIComponent(id) + '/feedback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'cancelled', revision: (lastTasks.find(t => String(t.task_id) === String(id)) || {}).revision || null, request_id: Date.now() + '-' + Math.random().toString(36).slice(2) }),
+      body: JSON.stringify({ action: 'cancelled' }),
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     lastFingerprint = '';

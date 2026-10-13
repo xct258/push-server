@@ -16,8 +16,6 @@ class TaskCancellationTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         cls.backends = []
         for source in ("容器相关脚本/main.py", "data/main.py"):
-            if not (root / source).exists():
-                continue
             spec = importlib.util.spec_from_file_location("push_cancellation_test", root / source)
             backend = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(backend)
@@ -84,11 +82,10 @@ class TaskCancellationTests(unittest.TestCase):
                 with self.storage(backend, [task]), \
                      patch.object(backend, "_callback_http", return_value={}) as http:
                     asyncio.run(cancel())
-                    http.assert_called_once()
-                    self.assertEqual(http.call_args.args[0], "PUT")
-                    self.assertEqual(http.call_args.args[1], f"{backend.TASKOPS_BASE_URL}/api/todos/123/processed")
-                    self.assertEqual(http.call_args.args[2]["action"], "cancelled")
-                    self.assertTrue(http.call_args.args[2]["callback_ref"])
+                    http.assert_called_once_with(
+                        "PUT", f"{backend.TASKOPS_BASE_URL}/api/todos/123/processed",
+                        {"action": "cancelled", "note": "任务已取消"},
+                    )
                     self.assertEqual(task["callback"], "done")
 
     def test_deleted_todo_404_stops_retries(self):
