@@ -188,16 +188,6 @@ input:focus-visible { outline: none; }
 .st-done { background: var(--green-soft); color: var(--green); }
 .st-cancelled { background: var(--bg-elev); color: var(--text-faint); }
 .task-title { font-weight: 600; color: var(--text-hi); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-actions { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
-.btn-act { padding: 4px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text-dim); transition: color .15s, border-color .15s, background .15s; }
-.btn-act:hover { color: var(--text-hi); border-color: #484f58; }
-.btn-act.done:hover { color: var(--green); border-color: rgba(63, 185, 80, .5); }
-.btn-act.cancel:hover { color: var(--red); border-color: rgba(248, 81, 73, .5); }
-.btn-act.busy { opacity: .6; cursor: default; }
-.meta-cb { color: var(--text-faint); }
-.meta-cb.ok { color: var(--green); }
-.meta-cb.warn { color: var(--orange); }
-.meta-cb.bad { color: var(--red); }
 
 @media (max-width: 960px) {
   .header h1 { flex: 1 1 100%; font-size: 15px; }
@@ -820,12 +810,6 @@ async function repush(el) {
 const cardList = document.getElementById('card-list');
 cardList.addEventListener('click', (e) => {
   const t = e.target;
-  const tdone = t.closest('[data-tdone]');
-  if (tdone) { taskFeedback(tdone, 'done'); return; }
-  const tsnooze = t.closest('[data-tsnooze]');
-  if (tsnooze) { taskFeedback(tsnooze, 'snooze'); return; }
-  const tcancel = t.closest('[data-tcancel]');
-  if (tcancel) { taskCancel(tcancel); return; }
   const toggle = t.closest('.btn-toggle-msg');
   if (toggle) { toggleMsg(toggle.closest('.card')); return; }
   const copy = t.closest('.btn-copy');
@@ -888,14 +872,6 @@ const STATUS_META = {
   done: ['已完成', 'st-done'],
   cancelled: ['已取消', 'st-cancelled'],
 };
-const CB_META = {
-  none: ['未回调', ''],
-  pending: ['回调中', 'warn'],
-  done: ['回调成功', 'ok'],
-  failed: ['回调失败', 'bad'],
-  skipped: ['跳过回调', ''],
-};
-
 function switchView(v) {
   view = v;
   document.getElementById('tab-records').classList.toggle('active', v === 'records');
@@ -982,14 +958,6 @@ function renderTaskCards(tasks) {
 
 function taskHtml(t) {
   const sm = STATUS_META[t.status] || [t.status, 'st-cancelled'];
-  const cb = CB_META[t.callback] || [t.callback || '-', ''];
-  const cbExtra = (t.callback === 'pending' && t.retry) ? '（重试' + t.retry + '）' : '';
-  const acts = (t.status === 'pending' || t.status === 'sent')
-    ? '<span class="task-actions">' +
-      '<button class="btn-act done" data-tdone="' + t.task_id + '">完成</button>' +
-      '<button class="btn-act" data-tsnooze="' + t.task_id + '" title="推迟60分钟">推迟</button>' +
-      '<button class="btn-act cancel" data-tcancel="' + t.task_id + '" data-ref="' + esc(t.client_ref || '') + '" data-server="' + esc(t.server_name || '') + '">取消</button>' +
-      '</span>' : '';
   return '<div class="card" data-task="' + t.task_id + '" data-id="' + (1000000 + t.task_id) + '">' +
     '<div class="card-top"><div class="card-left">' +
       '<span class="st-badge ' + sm[1] + '">' + sm[0] + '</span>' +
@@ -1001,52 +969,7 @@ function taskHtml(t) {
       '<span class="topic-tag">' + esc(t.topic || '-') + '</span>' +
       '<span class="meta-server">' + esc(t.client_ref || '-') + '</span>' +
       '<span class="meta-time">排期 ' + esc(fmtSched(t.schedule_at)) + ' · <span data-cd></span></span>' +
-      '<span class="meta-cb ' + cb[1] + '">' + cb[0] + cbExtra + '</span>' +
-      acts +
     '</div></div>';
-}
-
-async function taskFeedback(el, action) {
-  const id = el.dataset.tdone || el.dataset.tsnooze;
-  if (!id || el.classList.contains('busy')) return;
-  el.classList.add('busy');
-  const old = el.textContent;
-  el.textContent = '…';
-  try {
-    const res = await fetch('/api/task/' + id + '/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(action === 'snooze' ? { action, snooze_minutes: 60 } : { action }),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    lastFingerprint = '';
-    await loadTasks();
-  } catch (e) {
-    el.textContent = '失败';
-    setTimeout(() => { el.textContent = old; el.classList.remove('busy'); }, 1500);
-  }
-}
-
-async function taskCancel(el) {
-  const id = el.dataset.tcancel;
-  if (!id || el.classList.contains('busy')) return;
-  if (!confirm('确定取消该定时任务吗？到点将不再推送。')) return;
-  el.classList.add('busy');
-  const old = el.textContent;
-  el.textContent = '…';
-  try {
-    const res = await fetch('/api/task/' + encodeURIComponent(id) + '/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'cancelled' }),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    lastFingerprint = '';
-    await loadTasks();
-  } catch (e) {
-    el.textContent = '失败';
-    setTimeout(() => { el.textContent = old; el.classList.remove('busy'); }, 1500);
-  }
 }
 
 const es = new EventSource('/api/events');

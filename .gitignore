@@ -8,3 +8,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Runtime artifacts
+*.pid
+容器相关脚本/push_records/
+容器相关脚本/tasks.json

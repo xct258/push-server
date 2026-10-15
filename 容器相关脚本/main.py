@@ -4,16 +4,13 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from contextlib import asynccontextmanager
 import paho.mqtt.publish as publish
-from paho.mqtt import client as mqtt_client
 import asyncio
 import logging
 import json
 import os
 import re
 import threading
-import urllib.request
-import urllib.error
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
 
@@ -24,35 +21,24 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动：建任务库→起上行订阅→起反馈消费→起精确唤醒调度；关闭：全停。
+    """启动：建任务库→起精确唤醒调度；关闭：停调度。
 
-    调试：订阅起不来（broker 没跑）服务照常起，REST 反馈仍可用，看启动日志确认。
+    push-server 纯单向：只负责到点推送，不接收任何反馈 / 状态回传。
     """
     global _scheduler_wake
     if not os.path.exists(TASKS_PATH):
         save_tasks(_empty_tasks())
     wake = asyncio.Event()
     _scheduler_wake = wake
-    fb_queue: asyncio.Queue = asyncio.Queue()
-    loop = asyncio.get_running_loop()
-    subscriber = start_feedback_subscriber(loop, fb_queue)
-    consumer = asyncio.create_task(feedback_consumer_loop(fb_queue))
     sched = asyncio.create_task(task_scheduler_loop(wake))
     try:
         yield
     finally:
-        for t in (consumer, sched):
-            t.cancel()
+        sched.cancel()
         try:
-            await asyncio.gather(consumer, sched, return_exceptions=True)
+            await asyncio.gather(sched, return_exceptions=True)
         except Exception:
             pass
-        if subscriber is not None:
-            try:
-                subscriber.loop_stop()
-                subscriber.disconnect()
-            except Exception:
-                pass
         _scheduler_wake = None
 
 
@@ -130,15 +116,11 @@ async def serve_frontend():
 MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
 
-# ---- 定时任务（TaskOps 双向同步）配置，全走环境变量 ----
-TASKOPS_BASE_URL = os.environ.get("TASKOPS_BASE_URL", "http://127.0.0.1:8481").rstrip("/")
-TASKOPS_TOKEN = os.environ.get("TASKOPS_TOKEN", "")
+# ---- 定时任务（TaskOps 单向推送）配置，全走环境变量 ----
 PUSH_SERVER_TOKEN = os.environ.get("PUSH_SERVER_TOKEN", "")
 PUSH_TOPIC_DEFAULT = os.environ.get("PUSH_TOPIC", "taskops/todo")
-FEEDBACK_TOPIC = os.environ.get("FEEDBACK_TOPIC", "taskops/feedback")
 TASK_RESYNC_INTERVAL = int(os.environ.get("TASK_RESYNC_INTERVAL", "300"))  # 兜底重载秒数
 TASK_MIN_WAIT = 5  # 唤醒重算后最小休眠（防失败任务空转）
-CALLBACK_MAX_RETRY = 10
 TERMINAL_STATUS = ("done", "cancelled")
 
 DATA_DIR = os.path.join(BASE_DIR, "push_records")
@@ -306,8 +288,6 @@ def task_view(t: dict) -> dict:
         "schedule_at": t.get("schedule_at"),
         "recurring": bool(t.get("recurring")),
         "status": t.get("status"),
-        "callback": t.get("callback", "none"),
-        "retry": int(t.get("retry", 0)),
         "created_at": t.get("created_at"),
         "updated_at": t.get("updated_at"),
     }
@@ -371,26 +351,8 @@ class TaskUpdate(BaseModel):
     recurring: Optional[bool] = Field(default=None)
 
 
-class FeedbackIn(BaseModel):
-    action: str = Field(description='反馈动作：done（完成）、snooze（推迟）或 cancelled（取消）')
-    snooze_minutes: int = Field(default=60, description="推迟分钟数，仅 snooze 有效")
-
-    @field_validator("action")
-    @classmethod
-    def check_action(cls, v):
-        if v not in ("done", "snooze", "cancelled"):
-            raise ValueError('action 只能是 "done"、"snooze" 或 "cancelled"')
-        return v
-
-    @field_validator("snooze_minutes")
-    @classmethod
-    def check_minutes(cls, v):
-        if int(v) < 1:
-            raise ValueError("snooze_minutes 必须 >= 1")
-        return int(v)
-
 # ---------------------------------------------------------------------------
-# 定时任务核心：下行推送 / 反馈处理 / 回调 / 精确唤醒调度 / 上行订阅
+# 定时任务核心：下行推送 / 精确唤醒调度（纯单向，无反馈 / 无回调）
 # ---------------------------------------------------------------------------
 
 async def publish_task_downlink(t: dict) -> bool:
@@ -415,129 +377,6 @@ async def publish_task_downlink(t: dict) -> bool:
     return True
 
 
-def _ref_to_todo_id(client_ref: str) -> Optional[int]:
-    """client_ref 约定 todo-{id}，解析出 TaskOps 待办 id；不符合返回 None（跳过回调）。
-
-    调试：回调没触发先看任务的 client_ref 长什么样：GET /api/tasks。
-    """
-    m = re.match(r"^todo-(\d+)$", str(client_ref or "").strip())
-    return int(m.group(1)) if m else None
-
-
-def _callback_http(method: str, url: str, body: Optional[dict]) -> dict:
-    """同步回调（urllib，跑在 to_thread 里）；非 2xx 抛错触发重试。"""
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
-    headers = {"Content-Type": "application/json"} if body is not None else {}
-    if TASKOPS_TOKEN:
-        headers["X-Callback-Token"] = TASKOPS_TOKEN
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=15) as res:
-        code, text = res.status, res.read().decode("utf-8") or "{}"
-    if not (200 <= code < 300):
-        raise RuntimeError(f"callback HTTP {code}: {text[:200]}")
-    try:
-        return json.loads(text)
-    except Exception:
-        return {}
-
-
-def _mark_callback(task_id: int, callback: str, retry: int) -> None:
-    """回写回调状态（save 自带版本号+1 与调度唤醒，无害）。"""
-    data = load_tasks()
-    t = find_task(data, task_id)
-    if not t:
-        return
-    t["callback"] = callback
-    t["retry"] = retry
-    t["updated_at"] = _now_str()
-    save_tasks(data)
-
-
-async def do_callback(task_snapshot: dict, action: str, extra: Optional[dict] = None) -> None:
-    """反馈回调 TaskOps：done→processed，snooze→snooze；失败退避重试，最多 10 次。
-
-    调试：回调没到先看任务 callback/retry 列，再 curl 直调 TaskOps 接口确认通不通。
-    """
-    todo_id = _ref_to_todo_id(task_snapshot.get("client_ref"))
-    if todo_id is None:
-        logger.error(f"任务 #{task_snapshot.get('task_id')} client_ref 不符合 todo-{{id}}，跳过回调")
-        _mark_callback(task_snapshot["task_id"], "skipped", 0)
-        return
-    if action == "done":
-        method, url = "PUT", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/processed"
-        body = None
-    elif action == "cancelled":
-        method, url = "PUT", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/processed"
-        body = {"action": "cancelled", "note": "任务已取消"}
-    else:
-        method, url = "POST", f"{TASKOPS_BASE_URL}/api/todos/{todo_id}/snooze"
-        body = {
-            "note": f"客户端推迟{(extra or {}).get('snooze_minutes', 60)}分钟",
-            "mqtt_at": task_snapshot.get("schedule_at"),
-            "callback_ref": f"push-{task_snapshot['task_id']}-snooze-{task_snapshot.get('schedule_at')}",
-        }
-    for attempt in range(1, CALLBACK_MAX_RETRY + 1):
-        current = find_task(load_tasks(), task_snapshot["task_id"])
-        if action != "cancelled" and current and current.get("status") == "cancelled":
-            return  # 调用方已取消，停止旧的完成/推迟回调。
-        try:
-            await asyncio.to_thread(_callback_http, method, url, body)
-            logger.info(f"任务 #{task_snapshot.get('task_id')} 回调 TaskOps {action} 成功")
-            _mark_callback(task_snapshot["task_id"], "done", attempt - 1)
-            return
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            current = find_task(load_tasks(), task_snapshot["task_id"])
-            if action != "cancelled" and current and current.get("status") == "cancelled":
-                return
-            if isinstance(e, urllib.error.HTTPError) and e.code == 404:
-                logger.info(f"任务 #{task_snapshot.get('task_id')} 对应待办已不存在，停止回调")
-                _mark_callback(task_snapshot["task_id"], "skipped", 0)
-                return
-            logger.error(f"任务 #{task_snapshot.get('task_id')} 回调失败（第{attempt}次）：{e}")
-            _mark_callback(task_snapshot["task_id"], "pending", attempt)
-            await asyncio.sleep(min(30 * attempt, 300))
-    _mark_callback(task_snapshot["task_id"], "failed", CALLBACK_MAX_RETRY)
-    logger.error(f"任务 #{task_snapshot.get('task_id')} 回调达最大重试，需人工对账")
-
-
-async def apply_feedback(task_id: int, action: str, snooze_minutes: int = 60) -> dict:
-    """反馈统一入口（MQTT 上行与 REST 共用）：改状态 + 落盘 + 起回调任务。
-
-    返回 {"code":200,...} 或 {"code":404/400,...}，调用方自行映射（REST 抛错 / MQTT 记日志）。
-    调试：反馈没生效先 GET /api/tasks 看 status 列。
-    """
-    data = load_tasks()
-    t = find_task(data, task_id)
-    if not t:
-        return {"code": 404, "detail": f"任务 #{task_id} 不存在"}
-    if t.get("status") in TERMINAL_STATUS:
-        return {"code": 200, "task_id": task_id, "status": t["status"], "detail": "任务已终态，忽略"}
-    if action == "done":
-        t["status"] = "done"
-    elif action == "cancelled":
-        t["status"] = "cancelled"
-    elif action == "snooze":
-        minutes = max(int(snooze_minutes or 60), 1)
-        try:
-            base = parse_schedule_at(t.get("schedule_at"))
-        except ValueError:
-            base = _now_shanghai()
-        t["schedule_at"] = (base + timedelta(minutes=minutes)).isoformat()
-        t["status"] = "pending"
-    else:
-        return {"code": 400, "detail": 'action 只能是 "done"、"snooze" 或 "cancelled"'}
-    t["callback"] = "none"
-    t["retry"] = 0
-    t["updated_at"] = _now_str()
-    snapshot = dict(t)
-    save_tasks(data)  # 版本号+1 并唤醒调度（snooze 后重算 delay）
-    asyncio.create_task(do_callback(snapshot, action, {"snooze_minutes": snooze_minutes}))
-    logger.info(f"任务 #{task_id} 反馈 {action} 已受理，状态={t['status']}")
-    return {"code": 200, "task_id": task_id, "status": t["status"], "schedule_at": t.get("schedule_at")}
-
-
 async def task_scheduler_loop(wake: asyncio.Event) -> None:
     """精确唤醒调度：算最早任务 delay 睡到点；任务变更打断重算；兜底定时重载。
 
@@ -545,7 +384,7 @@ async def task_scheduler_loop(wake: asyncio.Event) -> None:
     调试：推送延迟先看 delay；失败任务按 TASK_MIN_WAIT 节奏重试，broker 挂了会刷屏日志。
     """
     logger.info(
-        f"定时任务调度启动：兜底{TASK_RESYNC_INTERVAL}s，下行默认[{PUSH_TOPIC_DEFAULT}]，上行[{FEEDBACK_TOPIC}]"
+        f"定时任务调度启动：兜底{TASK_RESYNC_INTERVAL}s，下行默认[{PUSH_TOPIC_DEFAULT}]"
     )
     while True:
         wake.clear()
@@ -588,78 +427,6 @@ async def task_scheduler_loop(wake: asyncio.Event) -> None:
             await asyncio.wait_for(wake.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             pass
-
-
-async def feedback_consumer_loop(queue: asyncio.Queue) -> None:
-    """上行反馈消费：MQTT 线程只管投递队列，处理全在事件循环里（与 REST 同一入口）。"""
-    while True:
-        obj = await queue.get()
-        try:
-            task_id = int(obj.get("task_id"))
-            action = str(obj.get("action"))
-            minutes = int(obj.get("snooze_minutes", 60))
-        except Exception:
-            logger.error(f"上行反馈格式非法，已丢弃：{obj}")
-            continue
-        try:
-            res = await apply_feedback(task_id, action, minutes)
-            if res.get("code") != 200:
-                logger.error(f"上行反馈处理失败：{res}")
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"上行反馈处理异常：{e}")
-
-
-def start_feedback_subscriber(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue):
-    """常驻订阅上行主题；连不上 broker 返回 None（服务照常起，REST 反馈仍可用）。
-
-    调试：订阅没消息先旁路确认客户端发出去了：mosquitto_sub -t '<FEEDBACK_TOPIC>'。
-    """
-    try:
-        try:
-            c = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
-        except Exception:
-            c = mqtt_client.Client()  # paho 1.x 兼容
-    except Exception as e:
-        logger.error(f"MQTT 订阅客户端创建失败：{e}")
-        return None
-
-    def on_connect(client, userdata, flags, rc, *args):
-        if rc == 0:
-            client.subscribe(FEEDBACK_TOPIC, qos=1)
-            logger.info(f"已订阅上行反馈主题 [{FEEDBACK_TOPIC}]")
-        else:
-            logger.error(f"MQTT 连接被拒 rc={rc}")
-
-    def on_disconnect(client, userdata, flags, rc, *args):
-        logger.error(f"MQTT 订阅断开 rc={rc}，自动重连中")
-
-    def on_message(client, userdata, msg):
-        try:
-            obj = json.loads(msg.payload.decode("utf-8") or "{}")
-        except Exception:
-            logger.error(f"上行消息非 JSON，已丢弃：{msg.payload[:100]!r}")
-            return
-        if isinstance(obj, dict) and "task_id" in obj and "action" in obj:
-            loop.call_soon_threadsafe(queue.put_nowait, obj)
-        else:
-            logger.error(f"上行反馈缺字段，已丢弃：{obj}")
-
-    c.on_connect = on_connect
-    c.on_disconnect = on_disconnect
-    c.on_message = on_message
-    try:
-        c.reconnect_delay_set(min_delay=5, max_delay=60)
-    except Exception:
-        pass
-    try:
-        c.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
-    except Exception as e:
-        logger.error(f"MQTT broker 连不上（{MQTT_BROKER}:{MQTT_PORT}）：{e}，订阅未启动")
-        return None
-    c.loop_start()
-    return c
 
 
 def _check_push_token(request: Request) -> None:
@@ -817,8 +584,6 @@ async def upsert_task(body: TaskCreate, request: Request):
         t["schedule_at"] = when.isoformat()
         t["recurring"] = bool(body.recurring)
         t["status"] = "pending"
-        t["callback"] = "none"
-        t["retry"] = 0
         t["updated_at"] = _now_str()
         action = "updated"
     else:
@@ -833,8 +598,6 @@ async def upsert_task(body: TaskCreate, request: Request):
             "schedule_at": when.isoformat(),
             "recurring": bool(body.recurring),
             "status": "pending",
-            "callback": "none",
-            "retry": 0,
             "created_at": _now_str(),
             "updated_at": _now_str(),
         }
@@ -871,8 +634,6 @@ async def update_task(task_id: int, body: TaskUpdate, request: Request):
         t["recurring"] = bool(body.recurring)
     if t.get("status") in TERMINAL_STATUS:
         t["status"] = "pending"
-        t["callback"] = "none"
-        t["retry"] = 0
     t["updated_at"] = _now_str()
     save_tasks(data)
     return {"code": 200, "task_id": task_id, "task": task_view(t)}
@@ -897,16 +658,9 @@ async def cancel_task_by_ref(
             continue
         if server_name and t.get("server_name") != server_name:
             continue
-        task_changed = False
         if t.get("status") not in TERMINAL_STATUS:
             t["status"] = "cancelled"
             n += 1
-            task_changed = True
-        if t.get("callback") in ("pending", "failed") or t.get("retry", 0):
-            t["callback"] = "none"
-            t["retry"] = 0
-            task_changed = True
-        if task_changed:
             t["updated_at"] = _now_str()
             changed = True
     if changed:
@@ -929,21 +683,6 @@ async def list_tasks(
         tasks = [t for t in tasks if t.get("status") == status]
     tasks = sorted(tasks, key=lambda t: t.get("task_id", 0), reverse=True)[:limit]
     return {"total": len(tasks), "tasks": [task_view(t) for t in tasks]}
-
-
-@app.post("/api/task/{task_id}/feedback", summary="任务反馈（REST 备用，与 MQTT 上行同一入口）")
-async def feedback_task(task_id: int, body: FeedbackIn, request: Request):
-    """MQTT 客户端发不了上行主题时走这里；处理逻辑与上行订阅完全一致。
-
-    调试：done 后 TaskOps 没变看任务 callback 列；snooze 后看 schedule_at 是否顺延。
-    """
-    _check_push_token(request)
-    res = await apply_feedback(task_id, body.action, body.snooze_minutes)
-    if res.get("code") == 404:
-        raise HTTPException(status_code=404, detail=res.get("detail"))
-    if res.get("code") == 400:
-        raise HTTPException(status_code=400, detail=res.get("detail"))
-    return res
 
 
 @app.get("/api/health", summary="健康检查")
