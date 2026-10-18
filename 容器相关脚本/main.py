@@ -109,9 +109,18 @@ async def validation_handler(request: Request, exc: RequestValidationError):
         errors.append({"field": field, "message": msg})
     return JSONResponse(status_code=422, content={"code": 422, "errors": errors})
 
+def web_file(name: str) -> str:
+    """网页文件路径：容器里在 static/ 下（start.sh 铺设），开发布局与 main.py 同级；取存在的那个。
+
+    调试：访问 / 报 500 就是两个位置都没有该文件。
+    """
+    in_static = os.path.join(BASE_DIR, "static", name)
+    return in_static if os.path.exists(in_static) else os.path.join(BASE_DIR, name)
+
+
 @app.get("/", summary="前端页面")
 async def serve_frontend():
-    return FileResponse(os.path.join(BASE_DIR, "static/index.html"))
+    return FileResponse(web_file("index.html"))
 
 MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
@@ -693,7 +702,7 @@ async def health_check():
 @app.get("/api/docs", include_in_schema=False)
 async def api_docs_page():
     """在线 API 文档页面（自动生成，无需手工维护）"""
-    return FileResponse(os.path.join(BASE_DIR, "static/api-docs.html"))
+    return FileResponse(web_file("api-docs.html"))
 
 if __name__ == "__main__":
     import uvicorn
