@@ -38,9 +38,11 @@ environment:
 
 ```json
 {
-  "server_name": "server-1",
-  "topic": "test/topic",
-  "message": "你好，世界",
+  "server_name": "o1-debian-1",
+  "topic": "server/khx-live",
+  "title": "录播备份上传脚本",
+  "message": "上传成功",
+  "status": "ok",
   "push_to_mqtt": true,
   "msg_type": "markdown",
   "mode": "append"
@@ -50,11 +52,19 @@ environment:
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `server_name` | string | 是 | 来源服务器名称 |
-| `topic` | string | 是 | MQTT 主题 |
-| `message` | string | 是 | 消息内容（支持 Markdown） |
+| `topic` | string | 是 | 项目 / 服务主题，例如 `server/khx-live`；不需要重复 `server_name` |
+| `title` | string | 是 | 项目里的脚本 / 任务名，例如 `录播备份上传脚本` |
+| `message` | string | 是 | 脚本执行结果 / 详情（支持 Markdown） |
+| `status` | string | 是 | 消息状态：`ok` / `warn` / `error` / `info`，TaskOps 服务页按它显示级别 |
 | `push_to_mqtt` | bool | 是 | 是否推送到 MQTT（传 `true`/`false`，**不带引号**） |
 | `msg_type` | string | 否 | 消息类型，固定 `"markdown"` |
-| `mode` | string | 否 | `"append"`（持续追加，默认）或 `"overwrite"`（覆盖同一 topic） |
+| `mode` | string | 否 | `"append"`（持续追加，默认）或 `"overwrite"`（覆盖同一 `server_name` + `topic` + `title` 的记录） |
+
+> 服务器上报的层级：`server_name` = 服务器，`topic` = 项目 / 服务，`title` = 项目里的脚本 / 任务。
+>
+> `mode=overwrite` 按 `server_name` + `topic` + `title` 三者匹配，同一项目下的不同脚本不会互相覆盖。
+>
+> `status` 是**消息自身**的状态；响应/记录里的 `push_result` 是 MQTT 投递结果（`success` / `failed` / `skipped`），两者不是一回事。
 
 **响应：**
 
@@ -62,6 +72,7 @@ environment:
 {
   "code": 200,
   "record_id": 1,
+  "status": "ok",
   "detail": "消息已投递至 MQTT"
 }
 ```

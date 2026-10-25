@@ -90,7 +90,7 @@ async def validation_handler(request: Request, exc: RequestValidationError):
                 fields = re.findall(r'"([^"]+)"\s*:', before)
                 if fields:
                     fname = fields[-1]
-                    tips = {"push_to_mqtt": "控制是否推送 MQTT，只能传入 true 或 false（不要加引号）", "server_name": "来源服务器名称", "mode": '可选 "append"（持续）或 "overwrite"（覆盖）', "msg_type": '固定为 "markdown"'}
+                    tips = {"push_to_mqtt": "控制是否推送 MQTT，只能传入 true 或 false（不要加引号）", "server_name": "来源服务器名称", "title": "消息标题（必填）", "status": '必填，只能是 "ok" / "warn" / "error" / "info"', "mode": '可选 "append"（持续）或 "overwrite"（覆盖）', "msg_type": '固定为 "markdown"'}
                     field_hint = f"，字段 '{fname}'（{tips.get(fname, '值格式有误')}）" if fname in tips else f"，字段 '{fname}' 的值有误"
                 else:
                     field_hint = ""
@@ -99,12 +99,22 @@ async def validation_handler(request: Request, exc: RequestValidationError):
             msg = f"JSON 格式错误（字符 {pos}{field_hint}）"
         elif "push_to_mqtt" in field:
             msg = f"字段 'push_to_mqtt'（控制是否推送 MQTT）只允许传入 true 或 false，不要加引号或传其他值"
+        elif "status" in field:
+            if e["type"] == "missing":
+                msg = '缺少必填字段 "status"，只能是 "ok" / "warn" / "error" / "info"'
+            else:
+                msg = '字段 "status" 只能是 "ok" / "warn" / "error" / "info"'
+        elif "title" in field:
+            if e["type"] == "missing":
+                msg = '缺少必填字段 "title"（消息标题）'
+            else:
+                msg = '字段 "title" 不能为空'
         elif "mode" in field:
-            msg = '字段 "mode" 可选 "append"（持续记录）或 "overwrite"（覆盖记录）'
+            msg = '字段 "mode" 可选 "append"（持续记录）或 "overwrite"（覆盖同一 server_name + topic + title 的记录）'
         elif "msg_type" in field:
             msg = '字段 "msg_type" 固定为 "markdown"'
         elif e["type"] == "missing":
-            tips = {"push_to_mqtt": "（控制是否推送 MQTT）", "server_name": "（来源服务器名称）", "mode": '（可选 "append"/"overwrite"）'}
+            tips = {"push_to_mqtt": "（控制是否推送 MQTT）", "server_name": "（来源服务器名称）", "title": "（消息标题）", "status": "（必填：ok / warn / error / info）", "mode": '（可选 "append"/"overwrite"）'}
             msg = f"缺少必填字段 '{field}'{tips.get(field, '')}"
         errors.append({"field": field, "message": msg})
     return JSONResponse(status_code=422, content={"code": 422, "errors": errors})
@@ -304,10 +314,28 @@ def task_view(t: dict) -> dict:
 class PushRequest(BaseModel):
     server_name: str = Field(description="来源服务器名称，记录保存到 push_records/{server_name}.json")
     topic: str = Field(description="MQTT 主题")
+    title: str = Field(description="消息标题（必填）")
     message: str = Field(description="消息内容（markdown 格式）")
+    status: str = Field(description='消息状态（必填）："ok" / "warn" / "error" / "info"')
     push_to_mqtt: bool = Field(description="是否推送到 MQTT，只允许 true 或 false")
     msg_type: str = Field("markdown", description='消息类型，固定为 "markdown"')
-    mode: str = Field("append", description='记录模式："append" 持续记录 或 "overwrite" 覆盖同名主题')
+    mode: str = Field("append", description='记录模式："append" 持续记录 或 "overwrite" 覆盖同一 server_name + topic + title 的记录')
+
+    @field_validator("title")
+    @classmethod
+    def check_title(cls, v):
+        value = str(v or "").strip()
+        if not value:
+            raise ValueError("标题不能为空")
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def check_status(cls, v):
+        value = str(v or "").strip().lower()
+        if value not in ("ok", "warn", "error", "info"):
+            raise ValueError('仅支持 "ok" / "warn" / "error" / "info"')
+        return value
 
     @field_validator("push_to_mqtt", mode="before")
     @classmethod
@@ -327,7 +355,7 @@ class PushRequest(BaseModel):
     @classmethod
     def check_mode(cls, v):
         if v not in ("append", "overwrite"):
-            raise ValueError('只能传入 "append"（持续记录）或 "overwrite"（覆盖记录）')
+            raise ValueError('只能传入 "append"（持续记录）或 "overwrite"（覆盖同一 server_name + topic + title 的记录）')
         return v
 
 class RePushRequest(BaseModel):
@@ -470,7 +498,7 @@ async def push_to_phone(request: PushRequest):
     if request.mode == "overwrite":
         existing = None
         for r in records:
-            if r["topic"] == request.topic:
+            if r["topic"] == request.topic and (r.get("title") or "") == request.title:
                 existing = r
                 break
         if existing:
@@ -478,7 +506,9 @@ async def push_to_phone(request: PushRequest):
                 "id": existing["id"],
                 "server_name": name,
                 "topic": request.topic,
+                "title": request.title,
                 "message": request.message,
+                "status": request.status,
                 "push_to_mqtt": request.push_to_mqtt,
                 "push_result": push_result,
                 "msg_type": request.msg_type,
@@ -504,7 +534,9 @@ async def push_to_phone(request: PushRequest):
             "id": len(records) + 1,
             "server_name": name,
             "topic": request.topic,
+            "title": request.title,
             "message": request.message,
+            "status": request.status,
             "push_to_mqtt": request.push_to_mqtt,
             "push_result": push_result,
             "msg_type": request.msg_type,
@@ -520,7 +552,7 @@ async def push_to_phone(request: PushRequest):
     broadcast({"type": "new", "total": len(all_records_flat())})
 
     detail = "消息已投递至 MQTT" if request.push_to_mqtt else "消息已保存，未推送至 MQTT"
-    return {"code": 200, "record_id": record["id"], "detail": detail}
+    return {"code": 200, "record_id": record["id"], "status": request.status, "detail": detail}
 
 @app.post("/api/repush", summary="重新推送")
 async def repush(request: RePushRequest):
