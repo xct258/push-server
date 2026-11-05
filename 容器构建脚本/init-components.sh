@@ -65,9 +65,40 @@ pip3 install fastapi "uvicorn[standard]" paho-mqtt pydantic --break-system-packa
 # 下载运行时脚本到 /usr/local/bin
 # 这些脚本在容器启动时被 start.sh 调用
 # --------------------------------------------------
-# 下载容器相关脚本
-for script in main.py index.html api-docs.html; do
+# 下载容器相关脚本（前端改走 Vue 构建产物，见下方 frontend 步骤）
+for script in main.py api-docs.html; do
     wget -q --tries=3 -O "/usr/local/bin/${script}" \
         "https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main/容器相关脚本/${script}"
     chmod +x "/usr/local/bin/${script}"
 done
+
+# --------------------------------------------------
+# 前端：Vue 3 + Vite 工程在镜像内构建，产物落到 /usr/local/bin/frontend
+# --------------------------------------------------
+echo "[frontend] 安装 Node.js（Vite 6 需要 Node 18+，按架构下载官方二进制）..."
+NODE_VERSION=20.19.2
+if [[ $arch == *"x86_64"* ]]; then
+    NODE_DIST="node-v${NODE_VERSION}-linux-x64"
+elif [[ $arch == *"aarch64"* ]]; then
+    NODE_DIST="node-v${NODE_VERSION}-linux-arm64"
+else
+    echo "不支持的架构：$arch" >&2
+    exit 1
+fi
+wget --tries=3 -O /root/tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_DIST}.tar.xz"
+tar -xf /root/tmp/node.tar.xz -C /opt
+export PATH="/opt/${NODE_DIST}/bin:$PATH"
+node --version && npm --version
+
+echo "[frontend] 下载仓库源码包并构建 前端/..."
+wget --tries=3 -O /root/tmp/repo.tar.gz "https://github.com/${GITHUB_USER}/${GITHUB_REPO}/archive/refs/heads/main.tar.gz"
+mkdir -p /root/tmp/repo
+tar -xzf /root/tmp/repo.tar.gz -C /root/tmp/repo
+cd "/root/tmp/repo/${GITHUB_REPO}-main/前端"
+npm install --registry=https://registry.npmmirror.com --no-audit --no-fund
+npm run build
+mkdir -p /usr/local/bin/frontend
+cp -r dist/. /usr/local/bin/frontend/
+cd /
+# 运行时只需要静态产物，Node 工具链移出镜像以保持体积
+rm -rf "/opt/${NODE_DIST}" /root/.npm

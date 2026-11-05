@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from contextlib import asynccontextmanager
 import paho.mqtt.publish as publish
@@ -128,9 +129,41 @@ def web_file(name: str) -> str:
     return in_static if os.path.exists(in_static) else os.path.join(BASE_DIR, name)
 
 
+# 前端构建产物目录（Vue 工程），按优先级取第一个存在的：
+#   1. 容器布局：/rec/static（start.sh 把 dist 拷贝进来）
+#   2. 开发布局：仓库内 前端/dist（本地 npm run build 后直接使用）
+# 都没有时回退到与 main.py 同级的单文件 index.html（旧版）。
+FRONTEND_DIST = None
+for _cand in (
+    os.path.join(BASE_DIR, "static"),
+    os.path.join(BASE_DIR, "..", "前端", "dist"),
+):
+    if os.path.exists(os.path.join(_cand, "index.html")):
+        FRONTEND_DIST = _cand
+        break
+
+
 @app.get("/", summary="前端页面")
 async def serve_frontend():
+    if FRONTEND_DIST:
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
     return FileResponse(web_file("index.html"))
+
+
+# Vue 构建产物的静态资源（/assets/*），指向 dist/assets
+if FRONTEND_DIST and os.path.isdir(os.path.join(FRONTEND_DIST, "assets")):
+    app.mount(
+        "/assets",
+        StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")),
+        name="frontend-assets",
+    )
+
+# 站点图标（Vue 工程 public/ 下的顶层文件）
+if FRONTEND_DIST and os.path.exists(os.path.join(FRONTEND_DIST, "favicon.svg")):
+
+    @app.get("/favicon.svg", include_in_schema=False)
+    async def serve_favicon():
+        return FileResponse(os.path.join(FRONTEND_DIST, "favicon.svg"), media_type="image/svg+xml")
 
 MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
@@ -521,6 +554,7 @@ async def push_to_phone(request: PushRequest):
                 "id": len(records) + 1,
                 "server_name": name,
                 "topic": request.topic,
+                "title": request.title,
                 "message": request.message,
                 "push_to_mqtt": request.push_to_mqtt,
                 "push_result": push_result,

@@ -1,0 +1,8 @@
+# 依赖与构建产物
+node_modules/
+dist/
+*.log
+
+# 本地环境
+.env.local
+.env.*.local

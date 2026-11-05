@@ -1,0 +1,24 @@
+{
+  "name": "mqtt-push-console",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "MQTT 推送中心前端（Vue 3 + Vite + Tailwind），对接 push-server 接口",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --host"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.4",
+    "marked": "^12.0.2",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "vite": "^6.0.7"
+  }
+}
