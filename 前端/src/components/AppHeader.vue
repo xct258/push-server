@@ -22,7 +22,9 @@ const emit = defineEmits(['change-view', 'load-new', 'toggle-help'])
         </div>
         <div class="leading-tight">
           <h1 class="text-[15px] font-bold tracking-wide text-white">MQTT 推送中心</h1>
-          <p class="text-[11px] text-slate-400">{{ view === 'records' ? '推送记录 · 历史消息一览' : '定时任务 · 单向待办推送' }}</p>
+          <p class="text-[11px] text-slate-400">
+            {{ view === 'records' ? '推送记录 · 历史消息一览' : view === 'tasks' ? '定时任务 · 单向待办推送' : '客户端 · 在线连接一览' }}
+          </p>
         </div>
       </div>
 
@@ -41,6 +43,13 @@ const emit = defineEmits(['change-view', 'load-new', 'toggle-help'])
           @click="emit('change-view', 'tasks')"
         >
           定时任务
+        </button>
+        <button
+          class="flex-1 sm:flex-none rounded-lg px-3 py-1.5 text-[13px] transition"
+          :class="view === 'clients' ? 'bg-indigo-500/20 text-indigo-200 shadow-sm' : 'text-slate-400 hover:text-slate-200'"
+          @click="emit('change-view', 'clients')"
+        >
+          客户端
         </button>
       </nav>
 

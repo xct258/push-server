@@ -1,14 +1,19 @@
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 
 import AppHeader from '@/components/AppHeader.vue'
 import HelpModal from '@/components/HelpModal.vue'
 import ToastHost from '@/components/ToastHost.vue'
+import { auth, loadAuth } from '@/auth'
 import { requestRefresh, uiState } from '@/store'
+import ClientsView from '@/views/ClientsView.vue'
+import LoginView from '@/views/LoginView.vue'
 import RecordsView from '@/views/RecordsView.vue'
 import TasksView from '@/views/TasksView.vue'
 
 const helpOpen = ref(false)
+
+onMounted(() => loadAuth())
 
 function changeView(v) {
   uiState.view = v
@@ -30,26 +35,38 @@ function loadNew() {
       <div class="absolute inset-0 bg-[radial-gradient(1100px_520px_at_50%_-220px,#0f1b3d_0%,#070b14_60%)]" />
     </div>
 
-    <AppHeader
-      class="relative z-30"
-      :view="uiState.view"
-      :connected="uiState.connected"
-      :has-new="uiState.hasNew"
-      @change-view="changeView"
-      @load-new="loadNew"
-      @toggle-help="helpOpen = !helpOpen"
-    />
+    <div v-if="!auth.checked" class="relative z-10 flex flex-1 items-center justify-center">
+      <div class="text-center animate-pulse">
+        <div class="text-sm font-semibold tracking-[0.25em] text-slate-400">CHECKING ACCESS…</div>
+      </div>
+    </div>
 
-    <main class="relative z-10 mx-auto w-full max-w-5xl min-h-0 flex-1 px-4 py-3 sm:px-6">
-      <RecordsView v-show="uiState.view === 'records'" class="h-full" />
-      <TasksView v-show="uiState.view === 'tasks'" class="h-full" />
-    </main>
+    <LoginView v-else-if="!auth.authenticated" />
 
-    <footer class="relative z-10 shrink-0 border-t border-white/5 py-2 text-center text-[11px] text-slate-600">
-      MQTT 推送中心 · 记录按服务器保留最近 100 条 · REST 服务 :8383
-    </footer>
+    <template v-else>
+      <AppHeader
+        class="relative z-30"
+        :view="uiState.view"
+        :connected="uiState.connected"
+        :has-new="uiState.hasNew"
+        @change-view="changeView"
+        @load-new="loadNew"
+        @toggle-help="helpOpen = !helpOpen"
+      />
+
+      <main class="relative z-10 mx-auto w-full max-w-5xl min-h-0 flex-1 px-4 py-3 sm:px-6">
+        <RecordsView v-show="uiState.view === 'records'" class="h-full" />
+        <TasksView v-show="uiState.view === 'tasks'" class="h-full" />
+        <ClientsView v-show="uiState.view === 'clients'" class="h-full" />
+      </main>
+
+      <footer class="relative z-10 shrink-0 border-t border-white/5 py-2 text-center text-[11px] text-slate-600">
+        MQTT 推送中心 · 记录按服务器保留最近 100 条 · REST 服务 :8383
+      </footer>
+
+      <HelpModal v-if="helpOpen" @close="helpOpen = false" />
+    </template>
 
     <ToastHost />
-    <HelpModal v-if="helpOpen" @close="helpOpen = false" />
   </div>
 </template>

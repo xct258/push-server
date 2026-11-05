@@ -116,11 +116,66 @@ GET /records?server_name=server-1&topic=test&limit=50&offset=0
 | `limit` | int | 100 | 返回条数（1-500） |
 | `offset` | int | 0 | 偏移量 |
 
+### `GET /api/clients` — 查询客户端在线状态
+
+管理页「客户端」标签使用该接口：
+
+```json
+{
+  "total": 2,
+  "online": 1,
+  "clients": [
+    {
+      "client_id": "windows_1a2b3c4d",
+      "suffix": "1a2b3c4d",
+      "online": true,
+      "platform": "windows",
+      "name": "DESKTOP-ABC",
+      "version": "1.0.0",
+      "last_seen": "2026-11-06 03:30:00",
+      "last_seen_epoch": 1793907000
+    }
+  ],
+  "topic": "$presence/clients",
+  "ttl_seconds": 180
+}
+```
+
+客户端连接后向 `$presence/clients/{client_id}` 发布 retained JSON，断开时由 MQTT Will
+改写为 `online=false`，连接期间每 60 秒刷新心跳。`$` 开头的主题不会被业务订阅的
+`#` 通配符匹配，所以不会触发客户端提醒。服务端超过 `PRESENCE_TTL_SECONDS`（默认 180 秒）
+收不到心跳时也会把客户端显示为离线。
+
+客户端以固定随机后缀作为设备唯一标识：同一个后缀即使自定义前缀改了，也会覆盖为同一台设备，
+不会在管理页出现两条记录。`DELETE /api/clients/{suffix}` 只允许删除离线记录，
+会同时清掉 broker 上的 retained 消息；设备下次上线后会重新上报并恢复显示。
+
 ### `GET /api/health` — 健康检查
 
 ```json
 { "status": "running" }
 ```
+
+## 访问密码
+
+设置环境变量 `APP_PASSWORD` 后，管理页会显示登录页，数据接口要求会话 Cookie（不设置则保持开放）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `APP_PASSWORD` | 访问密码；留空 = 不启用 |
+| `APP_SECRET` | 会话 Cookie 签名密钥；留空则由密码派生 |
+| `APP_SESSION_DAYS` | 会话有效天数，默认 `7` |
+| `PUSH_SERVER_TOKEN` | 服务间调用令牌；TaskOps 读记录、写定时任务时携带 `X-Push-Token` |
+
+放行规则：
+
+- 登录接口、`/api/health`、前端页面与静态资源始终可访问；
+- `/api/push`（服务器上报）和 `/api/task*`（TaskOps 待办同步）免登录，避免现有脚本失效；
+- 其余 `/api/*` 和 `/records` 需要登录 Cookie，或携带正确的 `X-Push-Token`。
+
+注意：这里只保护 HTTP 管理页与接口，MQTT 的 `1883` / `9001` 端口不在此范围内，请勿直接暴露公网。
+
+`docker-compose.yml` 已接好这些变量，在仓库根目录放一个 `.env`（参考 `.env.example`）后 `docker compose up -d` 生效。
 
 ## 目录结构
 

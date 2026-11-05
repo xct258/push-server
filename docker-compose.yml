@@ -8,4 +8,9 @@ services:
     environment:
       - MQTT_WS_PORT=9001  # mqtt的ws端口
       - UVICORN_PORT=8383  # fastapi的端口
+      - APP_PASSWORD=${APP_PASSWORD:-}
+      - APP_SECRET=${APP_SECRET:-}
+      - APP_SESSION_DAYS=${APP_SESSION_DAYS:-7}
+      - PUSH_SERVER_TOKEN=${PUSH_SERVER_TOKEN:-}
+      - PRESENCE_TTL_SECONDS=${PRESENCE_TTL_SECONDS:-180}
     restart: always

@@ -4,6 +4,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from contextlib import asynccontextmanager
+import auth
+import paho.mqtt.client as mqtt
 import paho.mqtt.publish as publish
 import asyncio
 import logging
@@ -11,6 +13,7 @@ import json
 import os
 import re
 import threading
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
@@ -22,28 +25,38 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动：建任务库→起精确唤醒调度；关闭：停调度。
+    """启动：建任务库→起精确唤醒调度→订阅客户端在线状态；关闭：全部停止。
 
-    push-server 纯单向：只负责到点推送，不接收任何反馈 / 状态回传。
+    push-server 对业务消息仍是单向的；唯一额外订阅是客户端保活用的
+    `$presence/clients/#`，只用于管理页展示，不参与业务下发。
     """
-    global _scheduler_wake
+    global _scheduler_wake, _presence_tracker
     if not os.path.exists(TASKS_PATH):
         save_tasks(_empty_tasks())
     wake = asyncio.Event()
     _scheduler_wake = wake
     sched = asyncio.create_task(task_scheduler_loop(wake))
+    _presence_tracker = PresenceTracker()
+    _presence_tracker.start()
     try:
         yield
     finally:
+        if _presence_tracker:
+            _presence_tracker.stop()
         sched.cancel()
         try:
             await asyncio.gather(sched, return_exceptions=True)
         except Exception:
             pass
         _scheduler_wake = None
+        _presence_tracker = None
 
 
 app = FastAPI(title="MQTT 推送中心 API", description="MQTT 推送中心的 HTTP 接口，文档由 OpenAPI 自动生成，访问 /api/docs 查看在线版。", lifespan=lifespan)
+
+# 管理页访问密码（APP_PASSWORD）：未设置时保持开放；设置后数据接口要求登录。
+app.add_middleware(auth.AuthMiddleware)
+app.include_router(auth.router)
 
 event_clients: set = set()
 
@@ -167,6 +180,221 @@ if FRONTEND_DIST and os.path.exists(os.path.join(FRONTEND_DIST, "favicon.svg")):
 
 MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
+
+# 客户端在线状态：客户端连接后向 `$presence/clients/{client_id}` 发布 retained JSON，
+# 断开时由 MQTT Will（LWT）改写为 online=false；每 30s 左右刷新一次 last_seen。
+# `$` 开头的主题不会被 `#` 通配符匹配，因此不会干扰业务订阅。
+PRESENCE_TOPIC = "$presence/clients"
+PRESENCE_TTL_SECONDS = int(os.environ.get("PRESENCE_TTL_SECONDS", "180"))
+
+
+def presence_suffix(client_id: str) -> str:
+    """从 `{自定义前缀}_{固定随机后缀}` 中取最后一段作为设备标识。"""
+    client_id = (client_id or "").strip()
+    if "_" not in client_id:
+        return client_id
+    suffix = client_id.rsplit("_", 1)[-1]
+    return suffix or client_id
+
+
+class PresenceTracker:
+    """后台订阅客户端在线状态，供管理页查询。"""
+
+    def __init__(self, topic: str = PRESENCE_TOPIC, ttl_seconds: int = PRESENCE_TTL_SECONDS):
+        self.topic = topic.rstrip("/")
+        self.ttl_seconds = max(10, ttl_seconds)
+        self._lock = threading.Lock()
+        self._items: dict[str, dict] = {}
+        self._client = None
+
+    def start(self) -> None:
+        try:
+            try:
+                client = mqtt.Client(
+                    mqtt.CallbackAPIVersion.VERSION2,
+                    client_id=f"push-server-presence-{os.getpid()}",
+                    protocol=mqtt.MQTTv311,
+                )
+            except AttributeError:
+                # paho-mqtt 1.x
+                client = mqtt.Client(
+                    client_id=f"push-server-presence-{os.getpid()}",
+                    protocol=mqtt.MQTTv311,
+                )
+            client.reconnect_delay_set(min_delay=1, max_delay=30)
+            client.on_connect = self._on_connect
+            client.on_message = self._on_message
+            client.on_disconnect = self._on_disconnect
+            client.connect_async(MQTT_BROKER, MQTT_PORT, keepalive=60)
+            client.loop_start()
+            self._client = client
+            logger.info("客户端在线状态订阅已启动：%s/#", self.topic)
+        except Exception as exc:
+            logger.error("客户端在线状态订阅启动失败：%s", exc)
+
+    def stop(self) -> None:
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        try:
+            if client.is_connected():
+                client.disconnect()
+        except Exception:
+            pass
+        try:
+            client.loop_stop()
+        except Exception:
+            pass
+
+    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        failure = getattr(reason_code, "is_failure", None)
+        if failure is True or (failure is None and reason_code != 0):
+            logger.warning("客户端在线状态订阅连接失败：%s", reason_code)
+            return
+        client.subscribe(f"{self.topic}/#", qos=1)
+
+    def _on_disconnect(self, client, userdata, *args):
+        logger.warning("客户端在线状态订阅连接断开，等待自动重连")
+
+    def _on_message(self, client, userdata, msg):
+        prefix = f"{self.topic}/"
+        if not msg.topic.startswith(prefix):
+            return
+        topic_client_id = msg.topic[len(prefix):].strip("/")
+
+        # 删除 retained 消息时 broker 会发一个空 payload，此时应移除客户端，
+        # 而不是按默认值重新标记为在线。
+        # 注意：切换自定义前缀时后端会主动清掉旧主题的 retained，这个空消息也会
+        # 回到订阅端；只有当前记录仍指向同一个 topic 时才删除，否则会把刚更新的
+        # 新主题记录一起删掉。
+        if not msg.payload:
+            self.remove_if_topic(presence_suffix(topic_client_id), msg.topic)
+            return
+
+        try:
+            parsed = json.loads(msg.payload.decode("utf-8"))
+        except Exception:
+            logger.warning("忽略无法解析的在线状态：%s", msg.topic)
+            return
+        if not isinstance(parsed, dict) or "online" not in parsed:
+            logger.warning("忽略字段不完整的在线状态：%s", msg.topic)
+            return
+
+        client_id = str(parsed.get("client_id") or topic_client_id)
+        if not client_id:
+            return
+
+        # 开发期不兼容旧格式：只接受带 suffix 字段的新 payload，
+        # 或 client_id 为 `{前缀}_{后缀}` 的新格式。
+        if "suffix" not in parsed and "_" not in client_id:
+            logger.info("忽略旧版在线状态：%s", client_id)
+            return
+
+        self.ingest(
+            client_id,
+            suffix=str(parsed.get("suffix") or presence_suffix(client_id)),
+            topic=msg.topic,
+            online=bool(parsed.get("online")),
+            platform=str(parsed.get("platform") or ""),
+            name=str(parsed.get("name") or ""),
+            version=str(parsed.get("version") or ""),
+        )
+
+    def remove(self, suffix: str) -> None:
+        with self._lock:
+            self._items.pop(suffix, None)
+
+    def remove_if_topic(self, suffix: str, topic: str) -> None:
+        with self._lock:
+            item = self._items.get(suffix)
+            if item is not None and item.get("topic") == topic:
+                self._items.pop(suffix, None)
+
+    def delete(self, suffix: str) -> Optional[dict]:
+        """删除离线记录，并清掉 broker 上的 retained 消息，避免服务重启后又回来。"""
+        with self._lock:
+            item = self._items.pop(suffix, None)
+        if item is None:
+            return None
+
+        topic = item.get("topic")
+        if topic:
+            self._clear_retained(topic)
+        return item
+
+    def _clear_retained(self, topic: str) -> None:
+        """删除 retained 消息（空 payload + retain=true）。"""
+        client = self._client
+        try:
+            if client is not None and client.is_connected():
+                client.publish(topic, payload=b"", qos=1, retain=True)
+            else:
+                publish.single(
+                    topic,
+                    payload=b"",
+                    qos=1,
+                    retain=True,
+                    hostname=MQTT_BROKER,
+                    port=MQTT_PORT,
+                )
+        except Exception as exc:
+            logger.warning("清理客户端 retained 消息失败：%s", exc)
+
+    def ingest(
+        self,
+        client_id: str,
+        *,
+        online: bool,
+        suffix: str = "",
+        topic: str = "",
+        platform: str = "",
+        name: str = "",
+        version: str = "",
+    ) -> None:
+        now = time.time()
+        suffix = suffix or presence_suffix(client_id)
+        old_topic = None
+        with self._lock:
+            previous = self._items.get(suffix, {})
+            if topic and previous.get("topic") and previous["topic"] != topic:
+                # 自定义前缀变了：清掉旧主题的 retained 在线状态
+                old_topic = previous["topic"]
+            item = {
+                "client_id": client_id,
+                "suffix": suffix,
+                "topic": topic or previous.get("topic", ""),
+                "online": online,
+                # 离线 Will 可能只带 online=false，保留上一次上报的展示信息
+                "platform": platform or previous.get("platform", ""),
+                "name": name or previous.get("name", ""),
+                "version": version or previous.get("version", ""),
+                "last_seen": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
+                "last_seen_ts": now,
+            }
+            self._items[suffix] = item
+
+        if old_topic:
+            self._clear_retained(old_topic)
+
+    def snapshot(self) -> list[dict]:
+        now = time.time()
+        with self._lock:
+            items = [dict(item) for item in self._items.values()]
+
+        for item in items:
+            last_seen_ts = float(item.get("last_seen_ts", 0))
+            fresh = now - last_seen_ts <= self.ttl_seconds
+            item["online"] = bool(item.get("online")) and fresh
+            item["last_seen_epoch"] = int(last_seen_ts)
+            item.pop("last_seen_ts", None)
+            item.pop("topic", None)
+
+        items.sort(key=lambda item: (not item["online"], item["suffix"].lower()))
+        return items
+
+
+_presence_tracker: Optional[PresenceTracker] = None
 
 # ---- 定时任务（TaskOps 单向推送）配置，全走环境变量 ----
 PUSH_SERVER_TOKEN = os.environ.get("PUSH_SERVER_TOKEN", "")
@@ -758,6 +986,42 @@ async def list_tasks(
         tasks = [t for t in tasks if t.get("status") == status]
     tasks = sorted(tasks, key=lambda t: t.get("task_id", 0), reverse=True)[:limit]
     return {"total": len(tasks), "tasks": [task_view(t) for t in tasks]}
+
+
+@app.get("/api/clients", summary="查询已连接的客户端")
+async def list_clients(online: Optional[bool] = Query(None, description="只看在线 / 离线客户端")):
+    """客户端在线状态：客户端通过 `$presence/clients/{client_id}` 上报，后端订阅汇总。
+
+    返回的 `online` 同时参考客户端最后一次心跳和服务端 TTL，避免客户端异常退出后
+    一直显示在线；离线记录会保留在内存中，直到服务重启。
+    """
+    tracker = _presence_tracker
+    clients = tracker.snapshot() if tracker else []
+    online_count = sum(1 for c in clients if c["online"])
+    if online is not None:
+        clients = [c for c in clients if c["online"] is online]
+    return {
+        "total": len(clients),
+        "online": online_count,
+        "clients": clients,
+        "topic": PRESENCE_TOPIC,
+        "ttl_seconds": PRESENCE_TTL_SECONDS,
+    }
+
+
+@app.delete("/api/clients/{suffix}", summary="删除离线客户端记录")
+async def delete_client(suffix: str):
+    """删除离线客户端记录：只清当前展示，不拉黑设备；设备下次上线会重新出现。"""
+    tracker = _presence_tracker
+    item = next((c for c in tracker.snapshot() if c["suffix"] == suffix), None) if tracker else None
+    if item is None:
+        raise HTTPException(status_code=404, detail="客户端不存在")
+    if item["online"]:
+        raise HTTPException(status_code=409, detail="在线客户端不能删除，请等待其离线")
+
+    tracker.delete(suffix)
+    logger.info("已删除离线客户端：%s（%s）", item.get("client_id"), suffix)
+    return {"code": 200, "deleted": suffix}
 
 
 @app.get("/api/health", summary="健康检查")

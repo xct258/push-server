@@ -8,6 +8,7 @@ UVICORN_PORT=${UVICORN_PORT:-8383}
 
 # 每次启动都同步镜像中的应用代码，避免旧挂载卷继续运行旧版本。
 cp "$SRC_DIR/main.py" "$DRIVE_DIR/"
+cp "$SRC_DIR/auth.py" "$DRIVE_DIR/"
 mkdir -p "$DRIVE_DIR/static"
 # 前端是构建产物（文件名带哈希，每次构建都变）：清空重铺，保证与镜像内置版本一致
 if [ -d "$SRC_DIR/frontend" ]; then

@@ -15,6 +15,12 @@ export class ApiError extends Error {
   }
 }
 
+// 会话失效统一回调：auth.js 注册后，任何接口 401 都会切回登录页。
+let unauthorizedHandler = null
+export function onUnauthorized(fn) {
+  unauthorizedHandler = fn
+}
+
 async function request(path, { method = 'GET', body, signal } = {}) {
   const options = { method, headers: {}, signal }
   if (body !== undefined) {
@@ -30,6 +36,7 @@ async function request(path, { method = 'GET', body, signal } = {}) {
   }
 
   if (!res.ok) {
+    if (res.status === 401) unauthorizedHandler?.()
     let detail = `${res.status} ${res.statusText}`
     try {
       const data = await res.json()
@@ -54,6 +61,14 @@ function qs(params) {
 }
 
 export const api = {
+  /** 登录状态 / 登录 / 退出。 */
+  auth: {
+    status: () => request(`${API_PREFIX}/auth/status`),
+    login: (password) =>
+      request(`${API_PREFIX}/auth/login`, { method: 'POST', body: { password } }),
+    logout: () => request(`${API_PREFIX}/auth/logout`, { method: 'POST' }),
+  },
+
   /** 查询推送记录：server_name 精确、topic 模糊、分页。 */
   records: (params = {}) => request(`${RECORDS_PATH}${qs(params)}`),
 
@@ -66,6 +81,13 @@ export const api = {
 
   /** 查询定时任务，可按状态筛选。 */
   tasks: (params = {}) => request(`${API_PREFIX}/tasks${qs(params)}`),
+
+  /** 查询客户端在线状态（由客户端通过 MQTT presence 主题上报）。 */
+  clients: () => request(`${API_PREFIX}/clients`),
+
+  /** 删除一条离线客户端记录；设备下次上线会自动重新出现。 */
+  deleteClient: (suffix) =>
+    request(`${API_PREFIX}/clients/${encodeURIComponent(suffix)}`, { method: 'DELETE' }),
 
   /** SSE 事件流地址（新消息提醒）。 */
   eventsUrl: () => `${API_PREFIX}/events`,
