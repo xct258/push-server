@@ -187,6 +187,20 @@ MQTT_PORT = 1883
 PRESENCE_TOPIC = "$presence/clients"
 PRESENCE_TTL_SECONDS = int(os.environ.get("PRESENCE_TTL_SECONDS", "180"))
 
+# 下行消息分类：决定客户端卡片布局，也决定 push-server 拼哪一种 payload。
+# 以后新增类型时在这里追加值，并补对应的 downlink 模板。
+MESSAGE_CATEGORY_SERVICE = "service"
+MESSAGE_CATEGORY_TODO = "todo"
+MESSAGE_CATEGORIES = (MESSAGE_CATEGORY_SERVICE, MESSAGE_CATEGORY_TODO)
+
+
+def normalize_message_category(value) -> str:
+    category = str(value or "").strip().lower()
+    if category not in MESSAGE_CATEGORIES:
+        allowed = " / ".join(f'"{item}"' for item in MESSAGE_CATEGORIES)
+        raise ValueError(f"仅支持 {allowed}")
+    return category
+
 
 def presence_suffix(client_id: str) -> str:
     """从 `{自定义前缀}_{固定随机后缀}` 中取最后一段作为设备标识。"""
@@ -612,13 +626,67 @@ def downlink_topic(t: dict) -> str:
     return f"{base}/{t['task_id']}"
 
 
-def downlink_text(t: dict) -> str:
-    """下行纯文本：【待办提醒】标题 + 正文；无标题只发正文。"""
-    title = (t.get("title") or "").strip()
-    message = (t.get("message") or "").strip()
+TODO_MARKER = "【待办提醒】"
+SERVICE_MARKER = "【服务通知】"
+SERVICE_FIELD = "【服务】"
+STATUS_FIELD = "【状态】"
+
+
+def _one_line(value) -> str:
+    """头字段必须单行，防止调用方传进来的换行破坏协议。"""
+    return " ".join(str(value or "").splitlines()).strip()
+
+
+def infer_message_category(record: dict, default: str = MESSAGE_CATEGORY_SERVICE) -> str:
+    """新记录直接读 category；旧记录按 payload 是否含待办前缀推断。"""
+    category = str(record.get("category") or "").strip().lower()
+    if category in MESSAGE_CATEGORIES:
+        return category
+    message = str(record.get("message") or "")
+    if message.startswith(TODO_MARKER):
+        return MESSAGE_CATEGORY_TODO
+    return default
+
+
+def build_downlink_text(record: dict, default_category: str = MESSAGE_CATEGORY_SERVICE) -> str:
+    """按 category 生成下行纯文本。
+
+    - todo：保持原格式 `【待办提醒】{title}\\n{message}`；
+    - service：`【服务通知】{server_name}` + `【服务】{title}` + `【状态】{status}` + 空行 + 正文。
+    """
+    category = infer_message_category(record, default=default_category)
+    title = _one_line(record.get("title"))
+    message = str(record.get("message") or "").strip("\n")
+
+    if category == MESSAGE_CATEGORY_TODO:
+        # 兼容调用方已经把 marker 拼进 message 的情况，避免双前缀
+        if message.startswith(TODO_MARKER):
+            return message
+        if title:
+            return f"{TODO_MARKER}{title}\n{message}" if message else f"{TODO_MARKER}{title}"
+        return message
+
+    # service
+    if message.startswith(SERVICE_MARKER):
+        return message
+    lines = [f"{SERVICE_MARKER}{_one_line(record.get('server_name'))}"]
     if title:
-        return f"【待办提醒】{title}\n{message}" if message else f"【待办提醒】{title}"
-    return message
+        lines.append(f"{SERVICE_FIELD}{title}")
+    status = _one_line(record.get("status"))
+    if status:
+        lines.append(f"{STATUS_FIELD}{status}")
+    return "\n".join(lines) + "\n\n" + message
+
+
+def downlink_text(t: dict) -> str:
+    """定时任务按分类拼下行文本；旧任务没有 category 时按待办处理。
+
+    任务里的 status 是 pending/sent/cancelled 的任务状态，不是消息状态，
+    不能写进服务通知的 `【状态】` 头。
+    """
+    record = dict(t)
+    record.pop("status", None)
+    return build_downlink_text(record, default_category=MESSAGE_CATEGORY_TODO)
 
 
 def task_view(t: dict) -> dict:
@@ -626,6 +694,7 @@ def task_view(t: dict) -> dict:
     return {
         "task_id": t.get("task_id"),
         "server_name": t.get("server_name"),
+        "category": t.get("category") or MESSAGE_CATEGORY_TODO,
         "client_ref": t.get("client_ref"),
         "topic": t.get("topic"),
         "title": t.get("title"),
@@ -639,6 +708,7 @@ def task_view(t: dict) -> dict:
 
 class PushRequest(BaseModel):
     server_name: str = Field(description="来源服务器名称，记录保存到 push_records/{server_name}.json")
+    category: str = Field(description='消息分类（必填）："service" 服务通知 / "todo" 待办提醒')
     topic: str = Field(description="MQTT 主题")
     title: str = Field(description="消息标题（必填）")
     message: str = Field(description="消息内容（markdown 格式）")
@@ -646,6 +716,11 @@ class PushRequest(BaseModel):
     push_to_mqtt: bool = Field(description="是否推送到 MQTT，只允许 true 或 false")
     msg_type: str = Field("markdown", description='消息类型，固定为 "markdown"')
     mode: str = Field("append", description='记录模式："append" 持续记录 或 "overwrite" 覆盖同一 server_name + topic + title 的记录')
+
+    @field_validator("category")
+    @classmethod
+    def check_category(cls, v):
+        return normalize_message_category(v)
 
     @field_validator("title")
     @classmethod
@@ -691,12 +766,18 @@ class RePushRequest(BaseModel):
 
 class TaskCreate(BaseModel):
     server_name: str = Field(description="来源服务名，如 taskops")
+    category: str = Field(description='消息分类（必填）："service" 服务通知 / "todo" 待办提醒')
     client_ref: str = Field(description="调用方唯一标识，如 todo-123；同 server 下重复推送=更新")
     topic: str = Field(default="", description="下行 MQTT 主题，空则用 PUSH_TOPIC 默认")
     title: str = Field(default="", description="任务标题")
     message: str = Field(description="消息内容（markdown）")
     schedule_at: datetime = Field(description="推送时刻，ISO，如 2026-10-12T20:30:00+08:00")
     recurring: bool = Field(default=False, description="是否循环任务（仅标记，下一期由调用方重建）")
+
+    @field_validator("category")
+    @classmethod
+    def check_category(cls, v):
+        return normalize_message_category(v)
 
     @field_validator("client_ref")
     @classmethod
@@ -707,11 +788,19 @@ class TaskCreate(BaseModel):
 
 
 class TaskUpdate(BaseModel):
+    category: Optional[str] = Field(default=None)
     topic: Optional[str] = Field(default=None)
     title: Optional[str] = Field(default=None)
     message: Optional[str] = Field(default=None)
     schedule_at: Optional[datetime] = Field(default=None)
     recurring: Optional[bool] = Field(default=None)
+
+    @field_validator("category")
+    @classmethod
+    def check_category(cls, v):
+        if v is None:
+            return None
+        return normalize_message_category(v)
 
 
 # ---------------------------------------------------------------------------
@@ -804,17 +893,25 @@ async def push_to_phone(request: PushRequest):
     name = request.server_name
     records = load_server(name)
 
+    downlink = build_downlink_text({
+        "category": request.category,
+        "server_name": name,
+        "title": request.title,
+        "message": request.message,
+        "status": request.status,
+    })
+
     if request.push_to_mqtt:
         try:
             publish.single(
                 topic=request.topic,
-                payload=request.message.encode('utf-8'),
+                payload=downlink.encode('utf-8'),
                 qos=1,
                 hostname=MQTT_BROKER,
                 port=MQTT_PORT,
             )
             push_result = "success"
-            logger.info(f"成功推送消息到主题 [{request.topic}]: {request.message}")
+            logger.info(f"成功推送消息到主题 [{request.topic}]（{request.category}）")
         except Exception as e:
             push_result = "failed"
             logger.error(f"推送失败: {str(e)}")
@@ -831,6 +928,7 @@ async def push_to_phone(request: PushRequest):
             record = {
                 "id": existing["id"],
                 "server_name": name,
+                "category": request.category,
                 "topic": request.topic,
                 "title": request.title,
                 "message": request.message,
@@ -846,6 +944,7 @@ async def push_to_phone(request: PushRequest):
             record = {
                 "id": len(records) + 1,
                 "server_name": name,
+                "category": request.category,
                 "topic": request.topic,
                 "title": request.title,
                 "message": request.message,
@@ -860,6 +959,7 @@ async def push_to_phone(request: PushRequest):
         record = {
             "id": len(records) + 1,
             "server_name": name,
+            "category": request.category,
             "topic": request.topic,
             "title": request.title,
             "message": request.message,
@@ -893,9 +993,10 @@ async def repush(request: RePushRequest):
     if not target:
         raise HTTPException(status_code=404, detail="记录不存在")
     try:
+        downlink = build_downlink_text(target)
         publish.single(
             topic=target["topic"],
-            payload=target["message"].encode("utf-8"),
+            payload=downlink.encode("utf-8"),
             qos=1,
             hostname=MQTT_BROKER,
             port=MQTT_PORT,
@@ -943,6 +1044,7 @@ async def upsert_task(body: TaskCreate, request: Request):
     data = load_tasks()
     t = find_task_by_ref(data, body.server_name, body.client_ref)
     if t:
+        t["category"] = body.category
         if body.topic:
             t["topic"] = body.topic
         if body.title is not None:
@@ -959,6 +1061,7 @@ async def upsert_task(body: TaskCreate, request: Request):
         t = {
             "task_id": data["seq"],
             "server_name": body.server_name,
+            "category": body.category,
             "client_ref": body.client_ref,
             "topic": body.topic or PUSH_TOPIC_DEFAULT,
             "title": body.title or "",
@@ -987,6 +1090,8 @@ async def update_task(task_id: int, body: TaskUpdate, request: Request):
     t = find_task(data, task_id)
     if not t:
         raise HTTPException(status_code=404, detail=f"任务 #{task_id} 不存在")
+    if body.category is not None:
+        t["category"] = body.category
     if body.topic:
         t["topic"] = body.topic
     if body.title is not None:

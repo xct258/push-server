@@ -127,6 +127,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   -H 'Content-Type: application/json' \
   -d '{
     "server_name": "o1-debian-1",   # 来源服务器
+    "category": "service",          # 必填：service 服务通知 / todo 待办提醒
     "topic": "server/khx-live",     # 项目 / 服务主题
     "title": "录播备份上传脚本",      # 项目里的脚本 / 任务名
     "message": "上传成功（支持 Markdown）",

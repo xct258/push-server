@@ -100,6 +100,7 @@ HTTP 状态码 `401`。
 ```json
 {
   "server_name": "o1-debian-1",
+  "category": "service",
   "topic": "server/khx-live",
   "title": "录播备份上传脚本",
   "message": "上传成功",
@@ -113,6 +114,7 @@ HTTP 状态码 `401`。
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `server_name` | string | 是 | 来源服务器名，记录保存在 `push_records/{server_name}.json` |
+| `category` | string | 是 | `service` 服务通知 / `todo` 待办提醒；决定 MQTT 下行格式和客户端卡片布局 |
 | `topic` | string | 是 | 项目 / 服务主题，例如 `server/khx-live` |
 | `title` | string | 是 | 脚本 / 任务名称，不能为空 |
 | `message` | string | 是 | 消息正文，支持 Markdown |
@@ -214,6 +216,7 @@ GET /records?server_name=server-1&topic=test&limit=50&offset=0
 ```json
 {
   "server_name": "taskops",
+  "category": "todo",
   "client_ref": "todo-123",
   "topic": "taskops/todo",
   "title": "交电费",
@@ -226,6 +229,7 @@ GET /records?server_name=server-1&topic=test&limit=50&offset=0
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `server_name` | string | 是 | 来源服务 |
+| `category` | string | 是 | `service` / `todo`；TaskOps 待办固定传 `todo` |
 | `client_ref` | string | 是 | 调用方唯一标识，同服务下重复即更新 |
 | `topic` | string | 否 | 空则使用服务端 `PUSH_TOPIC`，默认 `taskops/todo` |
 | `title` | string | 否 | 标题 |
@@ -296,6 +300,7 @@ GET /api/tasks?server_name=taskops&status=pending&limit=100
     {
       "task_id": 7,
       "server_name": "taskops",
+      "category": "todo",
       "client_ref": "todo-123",
       "topic": "taskops/todo",
       "title": "交电费",
@@ -438,7 +443,9 @@ taskops/todo/#
 {base}/{task_id}
 ```
 
-payload 为纯文本：
+payload 为纯文本，按 `category` 分两种格式。
+
+**待办提醒（`category=todo`）**：
 
 ```text
 【待办提醒】交电费
@@ -450,6 +457,23 @@ payload 为纯文本：
 - 剩余行是正文
 - 主题尾段是 `task_id`
 - 正文可以是 Markdown；客户端应用内会渲染，系统通知会转成纯文本
+
+**服务通知（`category=service`）**：
+
+```text
+【服务通知】o1-debian-1
+【服务】录播备份上传脚本
+【状态】ok
+
+上传成功
+```
+
+- 第一行 `【服务通知】` 后面是 `server_name`
+- `【服务】` 后面是脚本 / 任务名（请求里的 `title`）
+- `【状态】` 是 `ok / warn / error / info`
+- 空行之后是完整 Markdown 正文
+- 卡片标题使用服务器名，服务行使用 `【服务】` 的值
+- 客户端按首行 marker 分派，两种格式不混用
 
 ### 3.3 presence 在线状态
 
@@ -496,6 +520,7 @@ curl -X POST 'http://<host>:8383/api/push' \
   -H 'Content-Type: application/json' \
   -d '{
     "server_name": "server-1",
+    "category": "service",
     "topic": "server/backup",
     "title": "备份脚本",
     "message": "上传成功",
@@ -515,6 +540,7 @@ requests.post(
     "http://<host>:8383/api/push",
     json={
         "server_name": "server-1",
+        "category": "service",
         "topic": "server/backup",
         "title": "备份脚本",
         "message": "**上传成功**",
