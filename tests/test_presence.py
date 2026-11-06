@@ -5,6 +5,7 @@
 import asyncio
 import importlib.util
 import json
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +41,29 @@ class PresenceTests(unittest.TestCase):
 
         self.assertFalse(tracker.snapshot()[0]["online"])
 
+    def test_late_will_with_old_ts_is_ignored(self):
+        """重连后旧连接的 Will 可能迟到；它的 ts 是连接开始时间，不能覆盖新心跳。"""
+        tracker = self.backend.PresenceTracker()
+        tracker.ingest("android_a", online=True, platform="android", client_ts=200.0)
+        tracker.ingest("android_a", online=False, platform="android", client_ts=100.0)
+
+        self.assertTrue(tracker.snapshot()[0]["online"])
+
+    def test_intentional_offline_with_new_ts_wins(self):
+        """正常停止时重新生成的离线 payload ts 更新，应立刻生效。"""
+        tracker = self.backend.PresenceTracker()
+        tracker.ingest("android_a", online=True, platform="android", client_ts=100.0)
+        tracker.ingest("android_a", online=False, platform="android", client_ts=200.0)
+
+        self.assertFalse(tracker.snapshot()[0]["online"])
+
+    def test_presence_ts_parser_accepts_iso_and_rejects_garbage(self):
+        parse = self.backend.parse_presence_ts
+        self.assertGreater(parse("2026-11-06T12:55:32.382079+08:00"), 0)
+        self.assertGreater(parse("2026-11-06T04:55:32Z"), 0)
+        self.assertEqual(0.0, parse("not-a-time"))
+        self.assertEqual(0.0, parse(None))
+
     def test_stale_heartbeat_is_reported_offline(self):
         tracker = self.backend.PresenceTracker(ttl_seconds=10)
         tracker.ingest("windows_a", online=True, platform="windows")
@@ -58,6 +82,7 @@ class PresenceTests(unittest.TestCase):
                 "name": "Pixel 9",
                 "platform": "android",
                 "version": "1.0.0",
+                "topic": "taskops/todo/#",
                 "online": True,
             }
         ).encode("utf-8")
@@ -71,6 +96,7 @@ class PresenceTests(unittest.TestCase):
         client = tracker.snapshot()[0]
         self.assertEqual("android_1", client["client_id"])
         self.assertEqual("Pixel 9", client["name"])
+        self.assertEqual("taskops/todo/#", client["topic"])
         self.assertTrue(client["online"])
 
     def test_same_suffix_represents_same_device(self):
@@ -83,6 +109,21 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual("my-phone_abc12345", clients[0]["client_id"])
         self.assertEqual("abc12345", clients[0]["suffix"])
         self.assertEqual("Pixel 9", clients[0]["name"])
+
+
+    def test_status_change_time_only_updates_on_transition(self):
+        tracker = self.backend.PresenceTracker()
+        tracker.ingest("android_a", online=True, platform="android")
+        first = tracker._items["a"]["status_changed_ts"]
+
+        time.sleep(0.02)
+        tracker.ingest("android_a", online=True, platform="android")
+        self.assertEqual(first, tracker._items["a"]["status_changed_ts"])
+
+        time.sleep(0.02)
+        tracker.ingest("android_a", online=False, platform="android")
+        self.assertGreater(tracker._items["a"]["status_changed_ts"], first)
+        self.assertIn("status_changed_epoch", tracker.snapshot()[0])
 
     def test_old_hyphen_payload_is_ignored(self):
         tracker = self.backend.PresenceTracker()
@@ -136,7 +177,7 @@ class PresenceTests(unittest.TestCase):
             "android_a",
             online=True,
             platform="android",
-            topic="$presence/clients/android_a",
+            presence_topic="$presence/clients/android_a",
         )
 
         tracker._on_message(
@@ -154,13 +195,13 @@ class PresenceTests(unittest.TestCase):
             "old_abcd1234",
             online=True,
             platform="windows",
-            topic="$presence/clients/old_abcd1234",
+            presence_topic="$presence/clients/old_abcd1234",
         )
         tracker.ingest(
             "new_abcd1234",
             online=True,
             platform="windows",
-            topic="$presence/clients/new_abcd1234",
+            presence_topic="$presence/clients/new_abcd1234",
         )
 
         # 后端清理旧前缀时，broker 会把空 retained 回投给订阅端

@@ -197,6 +197,23 @@ def presence_suffix(client_id: str) -> str:
     return suffix or client_id
 
 
+def parse_presence_ts(value) -> float:
+    """解析客户端 payload 里的 ISO 时间戳；解析失败返回 0（不参与新旧比较）。
+
+    只比较客户端自己生成的两个时间戳（心跳 vs 迟到的 Will），不使用服务端时钟，
+    因此客户端时钟有偏差也不影响「谁更新」的判断。
+    """
+    if not isinstance(value, str) or not value.strip():
+        return 0.0
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
 class PresenceTracker:
     """后台订阅客户端在线状态，供管理页查询。"""
 
@@ -294,21 +311,23 @@ class PresenceTracker:
         self.ingest(
             client_id,
             suffix=str(parsed.get("suffix") or presence_suffix(client_id)),
-            topic=msg.topic,
+            presence_topic=msg.topic,
+            subscribe_topic=str(parsed.get("topic") or ""),
             online=bool(parsed.get("online")),
             platform=str(parsed.get("platform") or ""),
             name=str(parsed.get("name") or ""),
             version=str(parsed.get("version") or ""),
+            client_ts=parse_presence_ts(parsed.get("ts")),
         )
 
     def remove(self, suffix: str) -> None:
         with self._lock:
             self._items.pop(suffix, None)
 
-    def remove_if_topic(self, suffix: str, topic: str) -> None:
+    def remove_if_topic(self, suffix: str, presence_topic: str) -> None:
         with self._lock:
             item = self._items.get(suffix)
-            if item is not None and item.get("topic") == topic:
+            if item is not None and item.get("presence_topic") == presence_topic:
                 self._items.pop(suffix, None)
 
     def delete(self, suffix: str) -> Optional[dict]:
@@ -318,9 +337,9 @@ class PresenceTracker:
         if item is None:
             return None
 
-        topic = item.get("topic")
-        if topic:
-            self._clear_retained(topic)
+        presence_topic = item.get("presence_topic")
+        if presence_topic:
+            self._clear_retained(presence_topic)
         return item
 
     def _clear_retained(self, topic: str) -> None:
@@ -347,23 +366,52 @@ class PresenceTracker:
         *,
         online: bool,
         suffix: str = "",
-        topic: str = "",
+        presence_topic: str = "",
+        subscribe_topic: str = "",
         platform: str = "",
         name: str = "",
         version: str = "",
+        client_ts: float = 0.0,
     ) -> None:
         now = time.time()
         suffix = suffix or presence_suffix(client_id)
         old_topic = None
         with self._lock:
             previous = self._items.get(suffix, {})
-            if topic and previous.get("topic") and previous["topic"] != topic:
+
+            # MQTT Will 的 payload 是在连接建立时生成的，里面的 ts 是「连接开始时间」，
+            # 不一定是断线时间。重连后旧连接的 Will 可能迟到，把刚上线的新状态覆盖成离线。
+            # 这里用客户端自己的 ts 做新旧比较：比已记录状态更旧的「离线」消息直接丢弃。
+            # 正常停止时客户端会重新生成 payload（ts=当前时间），不会被误丢。
+            previous_client_ts = float(previous.get("client_ts", 0) or 0)
+            if (not online and client_ts > 0 and previous_client_ts > 0
+                    and client_ts <= previous_client_ts):
+                logger.info(
+                    "忽略迟到的离线状态（Will）：%s（ts=%s <= %s）",
+                    client_id,
+                    client_ts,
+                    previous_client_ts,
+                )
+                return
+
+            if (presence_topic and previous.get("presence_topic")
+                    and previous["presence_topic"] != presence_topic):
                 # 自定义前缀变了：清掉旧主题的 retained 在线状态
-                old_topic = previous["topic"]
+                old_topic = previous["presence_topic"]
+            previous_online = bool(previous.get("online"))
+            previous_last_seen = float(previous.get("last_seen_ts", 0))
+            previous_fresh = bool(previous) and (now - previous_last_seen <= self.ttl_seconds)
+            previous_effective_online = previous_online and previous_fresh
+
+            status_changed_ts = previous.get("status_changed_ts")
+            if status_changed_ts is None or previous_effective_online != online:
+                status_changed_ts = now
+
             item = {
                 "client_id": client_id,
                 "suffix": suffix,
-                "topic": topic or previous.get("topic", ""),
+                "presence_topic": presence_topic or previous.get("presence_topic", ""),
+                "topic": subscribe_topic or previous.get("topic", ""),
                 "online": online,
                 # 离线 Will 可能只带 online=false，保留上一次上报的展示信息
                 "platform": platform or previous.get("platform", ""),
@@ -371,6 +419,9 @@ class PresenceTracker:
                 "version": version or previous.get("version", ""),
                 "last_seen": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
                 "last_seen_ts": now,
+                "status_changed_ts": status_changed_ts,
+                # 只用于丢弃迟到的 Will，不对外暴露
+                "client_ts": max(client_ts, previous_client_ts),
             }
             self._items[suffix] = item
 
@@ -384,11 +435,25 @@ class PresenceTracker:
 
         for item in items:
             last_seen_ts = float(item.get("last_seen_ts", 0))
+            stored_online = bool(item.get("online"))
             fresh = now - last_seen_ts <= self.ttl_seconds
-            item["online"] = bool(item.get("online")) and fresh
+            item["online"] = stored_online and fresh
+
+            # 如果是 TTL 判定离线，状态变化时间按“最后一次心跳 + TTL”计算；
+            # 否则使用真正收到上线/离线事件的时间。
+            status_changed_ts = float(item.get("status_changed_ts", last_seen_ts))
+            if stored_online and not fresh:
+                status_changed_ts = last_seen_ts + self.ttl_seconds
+
             item["last_seen_epoch"] = int(last_seen_ts)
+            item["status_changed_epoch"] = int(status_changed_ts)
+            item["status_changed"] = datetime.fromtimestamp(
+                status_changed_ts, ZoneInfo("Asia/Shanghai")
+            ).strftime("%Y-%m-%d %H:%M:%S")
             item.pop("last_seen_ts", None)
-            item.pop("topic", None)
+            item.pop("status_changed_ts", None)
+            item.pop("presence_topic", None)
+            item.pop("client_ts", None)
 
         items.sort(key=lambda item: (not item["online"], item["suffix"].lower()))
         return items

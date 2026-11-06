@@ -41,7 +41,7 @@ async function loadClients(silent = false) {
   try {
     const data = await api.clients()
     const fp = `${data.online}|${data.clients
-      .map((c) => `${c.suffix}:${c.client_id}:${c.online}:${c.last_seen}:${c.version}:${c.platform}`)
+      .map((c) => `${c.suffix}:${c.client_id}:${c.online}:${c.last_seen}:${c.status_changed}:${c.version}:${c.platform}:${c.topic}`)
       .join(';')}`
     if (silent && fp === lastFingerprint) return
 
@@ -200,7 +200,7 @@ onUnmounted(() => {
             <h3 class="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-slate-100">
               {{ c.name || c.client_id }}
             </h3>
-            <span class="shrink-0 text-[12px] text-slate-500">{{ ago(c.last_seen_epoch) }}</span>
+            <span class="shrink-0 text-[12px] text-slate-500" :title="`状态变化：${c.status_changed}`">状态变化 {{ ago(c.status_changed_epoch) }}</span>
           </div>
 
           <footer class="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-white/5 pt-2.5 text-[12px] text-slate-400">
@@ -209,6 +209,11 @@ onUnmounted(() => {
             </span>
             <span class="rounded-md bg-white/5 px-1.5 py-0.5 font-mono text-[11px] text-slate-500" title="设备唯一后缀">
               #{{ c.suffix }}
+            </span>
+            <span v-if="c.topic"
+                  class="rounded-md bg-indigo-400/10 px-1.5 py-0.5 font-mono text-[11px] text-indigo-300"
+                  title="客户端订阅主题">
+              {{ c.topic }}
             </span>
             <span v-if="c.version" class="text-slate-500">v{{ c.version }}</span>
             <span class="ml-auto text-slate-500">最后心跳 {{ c.last_seen }}</span>

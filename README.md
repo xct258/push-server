@@ -130,10 +130,13 @@ GET /records?server_name=server-1&topic=test&limit=50&offset=0
       "suffix": "1a2b3c4d",
       "online": true,
       "platform": "windows",
+      "topic": "taskops/todo/#",
       "name": "DESKTOP-ABC",
       "version": "1.0.0",
       "last_seen": "2026-11-06 03:30:00",
-      "last_seen_epoch": 1793907000
+      "last_seen_epoch": 1793907000,
+      "status_changed": "2026-11-06 03:10:00",
+      "status_changed_epoch": 1793905800
     }
   ],
   "topic": "$presence/clients",
@@ -141,10 +144,15 @@ GET /records?server_name=server-1&topic=test&limit=50&offset=0
 }
 ```
 
-客户端连接后向 `$presence/clients/{client_id}` 发布 retained JSON，断开时由 MQTT Will
-改写为 `online=false`，连接期间每 60 秒刷新心跳。`$` 开头的主题不会被业务订阅的
-`#` 通配符匹配，所以不会触发客户端提醒。服务端超过 `PRESENCE_TTL_SECONDS`（默认 180 秒）
-收不到心跳时也会把客户端显示为离线。
+客户端连接后向 `$presence/clients/{client_id}` 发布 retained JSON（含订阅主题 `topic`），
+连接期间每 60 秒刷新一次 QoS1 心跳。`$` 开头的主题不会被业务订阅的 `#` 通配符匹配到，
+所以不会触发客户端提醒。服务端超过 `PRESENCE_TTL_SECONDS`（默认 180 秒）收不到心跳时
+会把客户端显示为离线。
+
+Android 客户端已不再使用 MQTT Will，异常断线由 retained 心跳 + TTL 兜底，主动停止时实时
+上报 `online=false`。对于仍使用 Will 的客户端（Windows / 旧版 Android），服务端会比较
+payload 里客户端自己生成的 `ts`：比当前记录更旧的 `online=false` 会被丢弃，避免重连后
+旧连接的 Will 迟到、把刚上线的设备误标成离线。
 
 客户端以固定随机后缀作为设备唯一标识：同一个后缀即使自定义前缀改了，也会覆盖为同一台设备，
 不会在管理页出现两条记录。`DELETE /api/clients/{suffix}` 只允许删除离线记录，
