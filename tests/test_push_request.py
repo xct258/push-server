@@ -231,6 +231,20 @@ class PushRequestTests(unittest.TestCase):
         self.assertEqual(saved["records"][0]["title"], "其他脚本")
         self.assertEqual(saved["records"][1]["title"], "测试标题")
 
+    def test_overwrite_with_different_category_appends(self):
+        existing = self.existing_record(category="todo", title="同名")
+        request = self.backend.PushRequest(**self.payload(category="service", title="同名", mode="overwrite"))
+        saved = {}
+
+        with patch.object(self.backend, "load_server", return_value=[existing]), \
+             patch.object(self.backend, "save_server", side_effect=lambda name, records: saved.update(records=records)), \
+             patch.object(self.backend, "broadcast"):
+            asyncio.run(self.backend.push_to_phone(request))
+
+        self.assertEqual(len(saved["records"]), 2)
+        self.assertEqual(saved["records"][0]["category"], "todo")
+        self.assertEqual(saved["records"][1]["category"], "service")
+
     def test_overwrite_with_different_topic_appends(self):
         existing = self.existing_record()
         request = self.backend.PushRequest(**self.payload(topic="test/other", mode="overwrite"))

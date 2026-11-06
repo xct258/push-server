@@ -67,7 +67,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               <span class="text-sky-400">信息</span>（info）。
             </li>
             <li>
-              <b class="text-slate-100">模式徽章：</b><span class="text-amber-300">覆盖</span> = 同 服务器+主题+标题 的记录会被覆盖；
+              <b class="text-slate-100">模式徽章：</b><span class="text-amber-300">覆盖</span> = 同 服务器+分类+主题+标题 的记录会被覆盖；
               <span class="text-slate-400">持续</span> = 每次推送追加一条新记录。
             </li>
             <li><b class="text-slate-100">正文：</b>支持 Markdown；内容较长时出现「展开全文 / 收起」。</li>
@@ -138,7 +138,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   }'</code></pre>
               <p class="mt-2 text-[12px] leading-relaxed text-slate-400">
                 <code class="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]">mode=overwrite</code>
-                按 服务器+主题+标题 三者匹配覆盖；<code class="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]">status</code>
+                按 服务器+分类+主题+标题 匹配覆盖；<code class="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]">status</code>
                 是消息自身状态，与响应里的
                 <code class="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]">push_result</code>（MQTT 投递结果）不是一回事。
               </p>

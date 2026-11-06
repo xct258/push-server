@@ -921,7 +921,9 @@ async def push_to_phone(request: PushRequest):
     if request.mode == "overwrite":
         existing = None
         for r in records:
-            if r["topic"] == request.topic and (r.get("title") or "") == request.title:
+            if (r["topic"] == request.topic
+                    and (r.get("title") or "") == request.title
+                    and infer_message_category(r) == request.category):
                 existing = r
                 break
         if existing:

@@ -117,11 +117,11 @@ HTTP 状态码 `401`。
 | `category` | string | 是 | `service` 服务通知 / `todo` 待办提醒；决定 MQTT 下行格式和客户端卡片布局 |
 | `topic` | string | 是 | 项目 / 服务主题，例如 `server/khx-live` |
 | `title` | string | 是 | 脚本 / 任务名称，不能为空 |
-| `message` | string | 是 | 消息正文，支持 Markdown |
+| `message` | string | 是 | 仅消息正文，支持 Markdown；服务通知的服务器/服务名/状态由服务端自动拼头，不要把 `【服务通知】` 手写进 `message` |
 | `status` | string | 是 | `ok` / `warn` / `error` / `info` |
 | `push_to_mqtt` | bool | 是 | 只允许 JSON 布尔值 `true` / `false`，不要传字符串 |
 | `msg_type` | string | 否 | 固定为 `markdown` |
-| `mode` | string | 否 | `append`（默认，追加）或 `overwrite`（覆盖同 server + topic + title 的记录） |
+| `mode` | string | 否 | `append`（默认，追加）或 `overwrite`（覆盖同 `server_name + category + topic + title` 的记录） |
 
 响应：
 
@@ -139,7 +139,25 @@ HTTP 状态码 `401`。
 - `status` 是消息自身状态
 - `push_result` 是 MQTT 投递结果：`success` / `failed` / `skipped`
 - 每个 `server_name` 最多保留最近 100 条记录
-- `mode=overwrite` 使用 `server_name + topic + title` 三者匹配
+- `mode=overwrite` 使用 `server_name + category + topic + title` 四者匹配
+
+**下行 payload 由服务端按 `category` 自动生成**：
+
+- `category=service`：
+  ```text
+  【服务通知】{server_name}
+  【服务】{title}
+  【状态】{status}
+
+  {message}
+  ```
+- `category=todo`：
+  ```text
+  【待办提醒】{title}
+  {message}
+  ```
+
+所以调用方只需要传正文 `message`，不需要自己拼 `【服务通知】` 或 `【待办提醒】` 前缀。服务端同时兼容已经手写前缀的旧调用，不会重复套头。
 
 校验失败时返回 `422`：
 
@@ -163,6 +181,7 @@ HTTP 状态码 `401`。
 }
 ```
 
+- 按记录里的 `category` 重新生成下行 payload，不会直接发送保存的 `message` 原文
 - 记录不存在：`404`
 - MQTT 发布失败：`500`
 - 成功：`{"code":200,"detail":"消息已重新推送"}`
@@ -193,6 +212,7 @@ GET /records?server_name=server-1&topic=test&limit=50&offset=0
     {
       "id": 1,
       "server_name": "server-1",
+      "category": "service",
       "topic": "server/khx-live",
       "title": "备份脚本",
       "message": "上传成功",
@@ -232,8 +252,8 @@ GET /records?server_name=server-1&topic=test&limit=50&offset=0
 | `category` | string | 是 | `service` / `todo`；TaskOps 待办固定传 `todo` |
 | `client_ref` | string | 是 | 调用方唯一标识，同服务下重复即更新 |
 | `topic` | string | 否 | 空则使用服务端 `PUSH_TOPIC`，默认 `taskops/todo` |
-| `title` | string | 否 | 标题 |
-| `message` | string | 是 | 正文，支持 Markdown |
+| `title` | string | 否 | 标题；`category=todo` 时作为待办标题 |
+| `message` | string | 是 | 仅正文，支持 Markdown；下行前缀由服务端按 `category` 生成 |
 | `schedule_at` | string | 是 | ISO 时间；无时区按 Asia/Shanghai |
 | `recurring` | bool | 否 | 仅标记循环任务，下一期由调用方重新创建 |
 
@@ -501,9 +521,11 @@ $presence/clients/{client_id}
 约定：
 
 - 连接成功后发布 `online=true`，retained
-- 每 60 秒刷新一次心跳
+- 每 60 秒用 QoS1 + retained 刷新一次心跳
+- 收到消息、MQTT 重连、亮屏/解锁时也会补发在线状态
 - 主动停止时发布 `online=false`
-- 客户端可用 MQTT Will 作为异常断线兜底；服务端会比较 `ts`，丢弃迟到的旧 Will
+- Android 客户端不使用 MQTT Will，异常断线由心跳 + `PRESENCE_TTL_SECONDS` 兜底；
+  Windows / 旧客户端仍可用 Will，服务端会比较 `ts`，丢弃迟到的旧 Will
 - `$` 开头的主题不会被业务订阅的 `#` 匹配，不会触发提醒
 - 服务端以 `suffix` 作为设备唯一标识
 - 自定义前缀改变但 suffix 不变时，仍视为同一台设备
