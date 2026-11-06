@@ -25,9 +25,11 @@ files=(
     install/install.sh
     startup/prepare.sh
     startup/once.sh
+    startup/services.sh
     startup/main.sh
     template/Dockerfile
     template/start.sh
+    template/supervisor.sh
     docker-compose.yml
     .github/workflows/build-image.yml
 )
@@ -39,7 +41,7 @@ done
 # 2. 脚本语法
 # ------------------------------------------------------------
 section "脚本语法"
-for f in check.sh install/*.sh startup/*.sh template/start.sh; do
+for f in check.sh install/*.sh startup/*.sh template/*.sh; do
     [ -f "$f" ] || continue
     if err=$(bash -n "$f" 2>&1); then
         ok "$f"
@@ -84,6 +86,48 @@ if [ "${INSTALL_CUSTOM:-false}" = "true" ]; then
     else
         bad "custom-install.sh 语法错误：${err}"
     fi
+fi
+
+# ------------------------------------------------------------
+# 3.5 多进程契约
+# ------------------------------------------------------------
+section "多进程契约"
+if [ -f startup/services.sh ]; then
+    contract_err=$(mktemp)
+    if (
+        declare -A SERVICE_STOP_TIMEOUT=()
+        # shellcheck disable=SC1091
+        . startup/services.sh
+        [ "${#SERVICE_NAMES[@]}" -gt 0 ] || {
+            echo "SERVICE_NAMES 不能为空" >&2
+            exit 1
+        }
+        for name in "${SERVICE_NAMES[@]}"; do
+            declare -F "start_${name}" >/dev/null 2>&1 || {
+                echo "缺少 start_${name}()" >&2
+                exit 1
+            }
+        done
+    ) 2>"$contract_err"; then
+        ok "startup/services.sh 服务契约有效"
+    else
+        bad "startup/services.sh 契约错误：$(cat "$contract_err")"
+    fi
+    rm -f "$contract_err"
+else
+    bad "缺少 startup/services.sh（多进程模板必需）"
+fi
+
+if grep -qF 'supervisor.sh' startup/main.sh && grep -qF 'services.sh' startup/main.sh; then
+    ok "main.sh 加载 supervisor.sh + services.sh"
+else
+    bad "startup/main.sh 必须加载 template/supervisor.sh 和 startup/services.sh"
+fi
+
+if grep -q '^supervise()' template/supervisor.sh 2>/dev/null; then
+    ok "supervisor.sh 提供 supervise()"
+else
+    bad "template/supervisor.sh 缺少 supervise()"
 fi
 
 # ------------------------------------------------------------

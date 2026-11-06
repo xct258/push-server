@@ -41,9 +41,10 @@ RUN set -eux; \
         rm -f /tmp/custom-install.sh; \
     fi; \
     mkdir -p /opt/startup; \
-    for f in prepare.sh once.sh main.sh; do \
+    for f in prepare.sh once.sh services.sh main.sh; do \
         fetch "${REPO_URL}/startup/${f}" "/opt/startup/${f}"; \
     done; \
+    fetch "${REPO_URL}/template/supervisor.sh" /opt/startup/supervisor.sh; \
     if ! wget -q --tries=3 --timeout=30 -O /opt/startup/update.sh "${REPO_URL}/startup/update.sh"; then \
         rm -f /opt/startup/update.sh; \
     fi; \

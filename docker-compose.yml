@@ -4,6 +4,10 @@ services:
     image: xct258/push-server:latest
     network_mode: host
     restart: unless-stopped
+    # 多进程容器用 tini 回收孤儿进程
+    init: true
+    # 停止 mqtt + api 的总时间大于默认 10s
+    stop_grace_period: 30s
     volumes:
       # 应用代码、前端产物、推送记录、定时任务和日志都放在 /data
       - ./data:/data

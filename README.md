@@ -94,8 +94,12 @@ docker compose up -d
 │   ├── prepare.sh           # 每次启动：同步代码/前端到 /data，生成 mosquitto 配置
 │   ├── once.sh              # 只执行一次
 │   ├── update.sh            # 自动更新（本仓库保持空操作）
-│   └── main.sh              # 启动 mosquitto + uvicorn 并常驻
-├── template/                # 模板固定的 Dockerfile 与 start.sh
+│   ├── services.sh          # 声明 mqtt + api 两个进程
+│   └── main.sh              # 固定薄壳：加载 supervisor + services
+├── template/                # 模板固定文件
+│   ├── Dockerfile
+│   ├── start.sh
+│   └── supervisor.sh        # 多进程启动/停止/日志/信号处理
 ├── check.sh                 # 本地自查（push 前运行）
 ├── docker-compose.yml       # 部署配置（host 网络 + ./data:/data）
 ├── 前端/                    # Vue 3 + Vite + Tailwind 前端工程
@@ -107,6 +111,9 @@ docker compose up -d
 >
 > 容器内应用目录从旧版的 `/rec` 改成了 `/data`；宿主机数据卷仍是 `./data`，
 > `push_records/` 和 `tasks.json` 原样保留，升级不会丢数据。
+>
+> 容器内由 `template/supervisor.sh` 管理 `mqtt` 和 `api` 两个进程：任一退出，
+> 两个都停止并由 Docker 重启容器；服务日志按进程分别写到 `/data/logs/service/<名称>.log`。
 
 ## 数据存储
 
