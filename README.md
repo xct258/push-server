@@ -64,31 +64,51 @@ environment:
 - `http://<host>:8383/docs`
 - `http://<host>:8383/openapi.json`
 
+## 构建与部署（docker-image-template）
+
+本仓库使用 [xct258/docker-image-template](https://github.com/xct258/docker-image-template)：
+镜像只通过 GitHub Actions 构建，本地不需要安装 Docker。
+
+1. Actions 页面 → **Build and Push Docker Image** → **Run workflow**；
+2. 工作流运行 `bash check.sh`，按 `install/app.conf` 构建并推送 `xct258/push-server:latest`
+   （每月 1 日也会自动构建）；
+3. 服务器上执行：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+需要在仓库 Secrets 中配置 `DOCKERACC` / `DOCKERPWD`。
+
 ## 目录结构
 
 ```
 .
 ├── API.md                   # 完整接口文档（REST / MQTT / presence）
-├── docker-compose.yml       # 容器编排配置
-├── Dockerfile                # 镜像构建
-├── 前端/                     # Vue 3 + Vite + Tailwind 前端工程（重写后的管理页面）
-│   ├── src/                  # 组件 / 视图 / 请求封装
-│   └── dist/                 # 构建产物（npm run build 生成）
-├── 容器构建脚本/
-│   ├── init-components.sh    # 构建时初始化（下载 7z、应用文件；镜像内构建前端）
-│   └── start.sh              # 容器入口脚本（启动 mosquitto + uvicorn）
-├── 容器相关脚本/
-│   ├── main.py               # FastAPI 应用（托管 /、/assets、前端构建产物）
-│   └── api-docs.html         # 在线 API 文档页
-└── data/                     # 运行时数据（自动创建）
-    ├── main.py               # 应用文件（挂载自镜像）
-    ├── static/               # 前端构建产物（挂载自镜像，start.sh 重铺）
-    └── push_records/         # 推送记录 JSON 文件
+├── install/                 # 构建期（docker-image-template）
+│   ├── app.conf             # 镜像名 / 架构 / apt / pip 依赖
+│   ├── install.sh           # 模板通用安装器
+│   └── custom-install.sh    # 下载 Node 构建前端，拷贝后端到 /opt/push-server
+├── startup/                 # 运行期
+│   ├── prepare.sh           # 每次启动：同步代码/前端到 /data，生成 mosquitto 配置
+│   ├── once.sh              # 只执行一次
+│   ├── update.sh            # 自动更新（本仓库保持空操作）
+│   └── main.sh              # 启动 mosquitto + uvicorn 并常驻
+├── template/                # 模板固定的 Dockerfile 与 start.sh
+├── check.sh                 # 本地自查（push 前运行）
+├── docker-compose.yml       # 部署配置（host 网络 + ./data:/data）
+├── 前端/                    # Vue 3 + Vite + Tailwind 前端工程
+└── 容器相关脚本/            # FastAPI 后端源码（main.py / auth.py / api-docs.html）
 ```
 
-> 前端构建产物由 `main.py` 自动识别并托管：容器里在 `data/static/`（`start.sh` 重铺），
+> 前端构建产物由 `main.py` 自动识别并托管：容器里在 `/data/static/`（`prepare.sh` 重铺），
 > 本地开发布局在仓库内 `前端/dist`。旧版单文件 `index.html` 仍作为兜底保留。
+>
+> 容器内应用目录从旧版的 `/rec` 改成了 `/data`；宿主机数据卷仍是 `./data`，
+> `push_records/` 和 `tasks.json` 原样保留，升级不会丢数据。
 
 ## 数据存储
 
-推送记录以 JSON 文件形式持久化在工作目录下，按 `server_name` 分文件存储，每个服务器最多保留 100 条记录。
+推送记录以 JSON 文件形式持久化在 `/data/push_records`（宿主机 `./data/push_records`），
+按 `server_name` 分文件存储，每个服务器最多保留 100 条记录。定时任务在 `/data/tasks.json`。

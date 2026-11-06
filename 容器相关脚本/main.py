@@ -143,7 +143,7 @@ def web_file(name: str) -> str:
 
 
 # 前端构建产物目录（Vue 工程），按优先级取第一个存在的：
-#   1. 容器布局：/rec/static（start.sh 把 dist 拷贝进来）
+#   1. 容器布局：/data/static（prepare.sh 把 dist 拷贝进来）
 #   2. 开发布局：仓库内 前端/dist（本地 npm run build 后直接使用）
 # 都没有时回退到与 main.py 同级的单文件 index.html（旧版）。
 FRONTEND_DIST = None

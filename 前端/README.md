@@ -77,8 +77,8 @@ npm run build      # 产物输出到 前端/dist
 
 ## 容器构建
 
-镜像构建时 `init-components.sh` 会在容器内安装 Node.js、下载仓库源码、执行 `npm install && npm run build`，
-产物落到 `/usr/local/bin/frontend`；`start.sh` 启动时清空重铺到 `/rec/static`，由 `main.py` 托管。
+镜像构建时 `install/custom-install.sh` 会在构建阶段安装 Node.js、下载仓库源码、执行 `npm install && npm run build`，
+产物落到 `/opt/push-server/frontend`；容器启动时 `startup/prepare.sh` 清空重铺到 `/data/static`，由 `main.py` 托管。
 
 ## 设计说明
 

@@ -1,16 +1,23 @@
 services:
   push-server:
     container_name: push-server
-    image: xct258/push-server
+    image: xct258/push-server:latest
     network_mode: host
+    restart: unless-stopped
     volumes:
-      - ./data:/rec        # 数据目录（配置/数据库/日志）
+      # 应用代码、前端产物、推送记录、定时任务和日志都放在 /data
+      - ./data:/data
     environment:
-      - MQTT_WS_PORT=9001  # mqtt的ws端口
-      - UVICORN_PORT=8383  # fastapi的端口
+      # mqtt 的 ws 端口
+      - MQTT_WS_PORT=${MQTT_WS_PORT:-9001}
+      # fastapi 的端口
+      - UVICORN_PORT=${UVICORN_PORT:-8383}
       - APP_PASSWORD=${APP_PASSWORD:-}
       - APP_SECRET=${APP_SECRET:-}
       - APP_SESSION_DAYS=${APP_SESSION_DAYS:-7}
       - PUSH_SERVER_TOKEN=${PUSH_SERVER_TOKEN:-}
       - PRESENCE_TTL_SECONDS=${PRESENCE_TTL_SECONDS:-180}
-    restart: always
+      # 模板日志与服务摘要
+      - LOG_BASE_DIR=/data/logs
+      - SERVICE_PORT=${UVICORN_PORT:-8383}
+      - SERVICE_PASSWORD=${APP_PASSWORD:-}
