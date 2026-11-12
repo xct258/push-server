@@ -23,7 +23,7 @@ services:
       - SSO_COOKIE_NAME=${SSO_COOKIE_NAME:-sso_push_server}
       - SSO_COOKIE_DOMAIN=${SSO_COOKIE_DOMAIN:-.xct258.top}
       - SSO_ALLOWED_REDIRECT_SUFFIX=${SSO_ALLOWED_REDIRECT_SUFFIX:-.xct258.top}
-      - SSO_VERIFY_URL=${SSO_VERIFY_URL:-http://127.0.0.1:8290/api/auth/verify}
+      - SSO_VERIFY_URL=${SSO_VERIFY_URL:-https://auth.xct258.top/api/auth/verify}
       - PUSH_SERVER_TOKEN=${PUSH_SERVER_TOKEN:-}
       - PRESENCE_TTL_SECONDS=${PRESENCE_TTL_SECONDS:-180}
       # 模板日志与服务摘要

@@ -76,7 +76,9 @@ def _auth_server_verify(request: Request) -> bool:
     if not cookie:
         return False
     url = f"{SSO_VERIFY_URL}?service={quote(SERVICE_ID, safe='')}"
-    req = urllib.request.Request(url, headers={"Cookie": cookie})
+    req = urllib.request.Request(
+        url, headers={"Cookie": cookie, "User-Agent": "Mozilla/5.0"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=2.0) as response:
             return 200 <= response.status < 300
