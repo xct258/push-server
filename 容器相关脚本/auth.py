@@ -21,7 +21,6 @@ import hashlib
 import hmac
 import json
 import os
-import threading
 import time
 import urllib.request
 from urllib.parse import quote
@@ -70,32 +69,15 @@ def _sign(payload: str) -> str:
     ).hexdigest()
 
 
-_state_lock = threading.Lock()
-_state_cache: tuple[float, str | None, bool | None] = (0.0, None, None)
-
-
 def remote_state() -> tuple[str | None, bool | None]:
-    """读取 auth-server 当前 Token 版本；缓存 2 秒，下线约 2 秒内生效。"""
-    global _state_cache
-    now = time.time()
-    with _state_lock:
-        expires, version, enabled = _state_cache
-    if now < expires:
-        return version, enabled
-
+    """每次访问时读取 auth-server 当前 Token 版本，下线后下一次请求生效。"""
     try:
         url = f"{SSO_STATE_URL}/{quote(SERVICE_ID, safe='')}"
-        with urllib.request.urlopen(url, timeout=1.5) as response:
+        with urllib.request.urlopen(url, timeout=1.0) as response:
             data = json.loads(response.read().decode("utf-8"))
-        version = str(data.get("token_version", "")) or None
-        enabled = bool(data.get("enabled"))
+        return str(data.get("token_version", "")) or None, bool(data.get("enabled"))
     except Exception:
-        version = None
-        enabled = None
-
-    with _state_lock:
-        _state_cache = (now + 2.0, version, enabled)
-    return version, enabled
+        return None, None
 
 
 def verify_token(token: str | None) -> bool:
