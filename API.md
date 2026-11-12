@@ -60,7 +60,7 @@ X-Push-Token: <PUSH_SERVER_TOKEN>
 | --- | --- |
 | `/api/auth/*` | 否 |
 | `/api/health` | 否 |
-| `/api/docs` | 是（页面密码启用时） |
+| `/api/docs` | 是（启用统一登录时） |
 | `/docs`、`/openapi.json` | 否 |
 | `/api/push` | 否 |
 | `/api/task`、`/api/task/*` | 中间件放行，但有 `PUSH_SERVER_TOKEN` 时会校验 `X-Push-Token` |
@@ -634,10 +634,9 @@ mosquitto_sub --url 'ws://<host>:9001/mqtt' \
 | --- | --- |
 | 200 | 成功 |
 | 400 | 参数格式错误 |
-| 401 | 未登录 / 会话过期 / 密码错误 |
+| 401 | 未登录 / 会话过期 |
 | 403 | 服务令牌错误 |
 | 404 | 任务 / 记录 / 客户端不存在 |
 | 409 | 在线客户端不能删除 |
 | 422 | 请求体校验失败 |
-| 429 | 登录尝试过多 |
 | 500 | 服务内部错误 |

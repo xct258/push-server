@@ -3,13 +3,12 @@
 登录页面和登录接口都在 auth-server，本服务不再提供本地登录页。
 
 配置（环境变量）：
-    AUTH_ENABLED      true/false；未设置时：配了 SSO_LOGIN_URL 或 APP_PASSWORD 即开启
+    AUTH_ENABLED      true/false；未设置时：配了 SSO_LOGIN_URL 即开启
     APP_SECRET        会话签名密钥；必须与 auth-server、TaskOps 完全一致
     SSO_LOGIN_URL     统一登录页地址，如 https://auth.example.com/login
                       未登录的页面请求会 302 到这里；接口仍返回 401
     SSO_COOKIE_NAME   Cookie 名，默认 sso_session
     SSO_COOKIE_DOMAIN 父域，如 .example.com（仅退出登录清 Cookie 时使用）
-    APP_PASSWORD      可选，仅兼容旧部署：没有 APP_SECRET 时用于派生签名密钥
 
 放行规则：
     - 状态/退出接口、健康检查、SPA 静态资源始终可访问；
@@ -26,7 +25,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-PASSWORD = os.environ.get("APP_PASSWORD", "")
 PUSH_TOKEN = os.environ.get("PUSH_SERVER_TOKEN", "")
 COOKIE_NAME = os.environ.get("SSO_COOKIE_NAME", "sso_session")
 SSO_COOKIE_DOMAIN = os.environ.get("SSO_COOKIE_DOMAIN", "").strip()
@@ -44,11 +42,8 @@ PUBLIC_API_PATHS = {"/api/push", "/api/task"}
 PUBLIC_STATIC_PATHS = {"/favicon.ico", "/favicon.svg"}
 PUBLIC_STATIC_PREFIXES = ("/assets/",)
 
-# 必须与 auth-server 完全一致：APP_SECRET 优先，否则兼容旧的 "sso|密码" 派生。
-SECRET = (
-    os.environ.get("APP_SECRET")
-    or (hashlib.sha256(f"sso|{PASSWORD}".encode("utf-8")).hexdigest() if PASSWORD else "")
-).encode("utf-8")
+# 与 auth-server 完全一致：只使用共享的 APP_SECRET 校验会话。
+SECRET = os.environ.get("APP_SECRET", "").encode("utf-8")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -58,7 +53,7 @@ def auth_enabled() -> bool:
         return True
     if AUTH_ENABLED_RAW in ("0", "false", "no", "off"):
         return False
-    return bool(SSO_LOGIN_URL or PASSWORD)
+    return bool(SSO_LOGIN_URL)
 
 
 def _sign(payload: str) -> str:
