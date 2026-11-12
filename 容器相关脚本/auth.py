@@ -1,14 +1,16 @@
-"""统一登录（SSO）会话校验：校验 auth-server 签发的共享 Cookie。
+"""统一登录（SSO）会话校验：校验 auth-server 签发的服务 Token。
 
 登录页面和登录接口都在 auth-server，本服务不再提供本地登录页。
+每个服务独立密码、独立 Cookie、独立签名密钥。
 
 配置（环境变量）：
-    AUTH_ENABLED      true/false；未设置时：配了 SSO_LOGIN_URL 即开启
-    APP_SECRET        会话签名密钥；必须与 auth-server、TaskOps 完全一致
-    SSO_LOGIN_URL     统一登录页地址，如 https://auth.example.com/login
-                      未登录的页面请求会 302 到这里；接口仍返回 401
-    SSO_COOKIE_NAME   Cookie 名，默认 sso_session
-    SSO_COOKIE_DOMAIN 父域，如 .example.com（仅退出登录清 Cookie 时使用）
+    AUTH_ENABLED          true/false；默认 true
+    SERVICE_ID            服务 ID，例如 push-server
+    SERVICE_SECRET        该服务自己的签名密钥
+    SERVICE_TOKEN_VERSION 该服务的 Token 版本，默认 1
+    SSO_LOGIN_URL         登录页地址，例如 https://auth.o1-1.xct258.top/login
+    SSO_COOKIE_NAME       该服务的 Cookie 名，例如 sso_push_server
+    SSO_COOKIE_DOMAIN     父域，例如 .o1-1.xct258.top
 
 放行规则：
     - 状态/退出接口、健康检查、SPA 静态资源始终可访问；
@@ -25,11 +27,14 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+SERVICE_ID = os.environ.get("SERVICE_ID", "").strip()
+SERVICE_SECRET = os.environ.get("SERVICE_SECRET", "")
+TOKEN_VERSION = os.environ.get("SERVICE_TOKEN_VERSION", "1").strip()
 PUSH_TOKEN = os.environ.get("PUSH_SERVER_TOKEN", "")
-COOKIE_NAME = os.environ.get("SSO_COOKIE_NAME", "sso_session")
+COOKIE_NAME = os.environ.get("SSO_COOKIE_NAME", "").strip()
 SSO_COOKIE_DOMAIN = os.environ.get("SSO_COOKIE_DOMAIN", "").strip()
 SSO_LOGIN_URL = os.environ.get("SSO_LOGIN_URL", "").strip()
-AUTH_ENABLED_RAW = os.environ.get("AUTH_ENABLED", "").strip().lower()
+AUTH_ENABLED_RAW = os.environ.get("AUTH_ENABLED", "true").strip().lower()
 
 PUBLIC_PATHS = {
     "/api/auth/status",
@@ -42,9 +47,6 @@ PUBLIC_API_PATHS = {"/api/push", "/api/task"}
 PUBLIC_STATIC_PATHS = {"/favicon.ico", "/favicon.svg"}
 PUBLIC_STATIC_PREFIXES = ("/assets/",)
 
-# 与 auth-server 完全一致：只使用共享的 APP_SECRET 校验会话。
-SECRET = os.environ.get("APP_SECRET", "").encode("utf-8")
-
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
@@ -53,23 +55,29 @@ def auth_enabled() -> bool:
         return True
     if AUTH_ENABLED_RAW in ("0", "false", "no", "off"):
         return False
-    return bool(SSO_LOGIN_URL)
+    return bool(SERVICE_ID and SERVICE_SECRET and SSO_LOGIN_URL)
 
 
 def _sign(payload: str) -> str:
-    return hmac.new(SECRET, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(
+        SERVICE_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
 
 
 def verify_token(token: str | None) -> bool:
-    if not SECRET or not token:
+    if not SERVICE_ID or not SERVICE_SECRET or not COOKIE_NAME or not token:
         return False
-    try:
-        version, expires, signature = token.split(".")
-    except ValueError:
+    parts = token.split(".")
+    if len(parts) != 5:
         return False
-    if version != "v1":
+    version, service_id, token_version, expires, signature = parts
+    if version != "v1" or service_id != SERVICE_ID:
         return False
-    if not hmac.compare_digest(signature, _sign(f"v1.{expires}")):
+    if token_version != TOKEN_VERSION:
+        return False
+    if not hmac.compare_digest(
+        signature, _sign(f"v1.{service_id}.{token_version}.{expires}")
+    ):
         return False
     try:
         return int(expires) > int(time.time())
@@ -110,13 +118,23 @@ def _original_url(request: Request) -> str:
     return url
 
 
-def redirect_to_login(request: Request) -> RedirectResponse | JSONResponse:
+def login_url() -> str:
     if not SSO_LOGIN_URL:
-        return JSONResponse({"detail": "未登录，且未配置 SSO_LOGIN_URL"}, status_code=401)
-    target = _original_url(request)
+        return ""
     sep = "&" if "?" in SSO_LOGIN_URL else "?"
+    return f"{SSO_LOGIN_URL}{sep}service={quote(SERVICE_ID)}"
+
+
+def redirect_to_login(request: Request) -> RedirectResponse | JSONResponse:
+    base = login_url()
+    if not base:
+        return JSONResponse(
+            {"detail": "未登录，且未配置 SSO_LOGIN_URL"}, status_code=401
+        )
+    target = _original_url(request)
+    sep = "&" if "?" in base else "?"
     return RedirectResponse(
-        f"{SSO_LOGIN_URL}{sep}next={quote(target, safe='')}",
+        f"{base}{sep}next={quote(target, safe='')}",
         status_code=302,
     )
 
@@ -148,7 +166,8 @@ def auth_status(request: Request):
     return {
         "enabled": auth_enabled(),
         "authenticated": is_authenticated(request),
-        "login_url": SSO_LOGIN_URL,
+        "service": SERVICE_ID,
+        "login_url": login_url(),
     }
 
 

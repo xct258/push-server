@@ -24,10 +24,13 @@ push-server 不再提供本地登录页和 `/api/auth/login`，登录统一由 `
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `AUTH_ENABLED` | `true` | 是否启用登录校验 |
-| `APP_SECRET` | 空 | 会话签名密钥；必须与 auth-server 一致 |
+| `SERVICE_ID` | `push-server` | 本服务的服务 ID |
+| `SERVICE_SECRET` | 空 | 本服务自己的签名密钥 |
+| `SERVICE_TOKEN_VERSION` | `1` | 本服务的 Token 版本 |
 | `SSO_LOGIN_URL` | 空 | 统一登录页地址，未登录页面 302 到这里 |
-| `SSO_COOKIE_NAME` | `sso_session` | 共享 Cookie 名 |
+| `SSO_COOKIE_NAME` | `sso_push_server` | 本服务的 Cookie 名 |
 | `SSO_COOKIE_DOMAIN` | 空 | 父域，退出登录时用于清 Cookie |
+| `SSO_ALLOWED_REDIRECT_SUFFIX` | 空 | 允许登录后跳转的后缀 |
 | `PUSH_SERVER_TOKEN` | 空 | 服务间调用令牌 |
 
 查看当前登录状态：
@@ -42,7 +45,7 @@ GET /api/auth/status
 POST /api/auth/logout
 ```
 
-接口未登录返回 `401`；页面未登录返回 `302` 到 `https://auth.o1-1.xct258.top/login?next=...`。
+接口未登录返回 `401`；页面未登录返回 `302` 到 `https://auth.o1-1.xct258.top/login?service=push-server&next=...`。
 
 ### 1.2 服务间令牌
 
@@ -596,10 +599,13 @@ mosquitto_sub --url 'ws://<host>:9001/mqtt' \
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
 | `AUTH_ENABLED` | `true` | 是否启用统一登录校验 |
-| `APP_SECRET` | 空 | 会话签名密钥；必须与 auth-server 一致 |
+| `SERVICE_ID` | `push-server` | 本服务的服务 ID |
+| `SERVICE_SECRET` | 空 | 本服务自己的签名密钥 |
+| `SERVICE_TOKEN_VERSION` | `1` | 本服务的 Token 版本 |
 | `SSO_LOGIN_URL` | 空 | 统一登录页地址；未登录页面 302 到这里 |
-| `SSO_COOKIE_NAME` | `sso_session` | 共享 Cookie 名 |
+| `SSO_COOKIE_NAME` | `sso_push_server` | 本服务的 Cookie 名 |
 | `SSO_COOKIE_DOMAIN` | 空 | 父域，退出登录时清 Cookie |
+| `SSO_ALLOWED_REDIRECT_SUFFIX` | 空 | 允许登录后跳转的后缀 |
 | `PUSH_SERVER_TOKEN` | 空 | 服务间调用令牌 |
 | `PUSH_TOPIC` | `taskops/todo` | 默认 MQTT 下行 base |
 | `PRESENCE_TTL_SECONDS` | `180` | 客户端心跳超时时间 |
