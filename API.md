@@ -31,6 +31,7 @@ push-server 不再提供本地登录页和 `/api/auth/login`，登录统一由 `
 | `SSO_COOKIE_NAME` | `sso_push_server` | 本服务的 Cookie 名 |
 | `SSO_COOKIE_DOMAIN` | 空 | 父域，退出登录时用于清 Cookie |
 | `SSO_ALLOWED_REDIRECT_SUFFIX` | 空 | 允许登录后跳转的后缀 |
+| `SSO_STATE_URL` | `http://127.0.0.1:8290/api/auth/service` | 服务状态地址，用于强制下线 |
 | `PUSH_SERVER_TOKEN` | 空 | 服务间调用令牌 |
 
 查看当前登录状态：
@@ -606,6 +607,7 @@ mosquitto_sub --url 'ws://<host>:9001/mqtt' \
 | `SSO_COOKIE_NAME` | `sso_push_server` | 本服务的 Cookie 名 |
 | `SSO_COOKIE_DOMAIN` | 空 | 父域，退出登录时清 Cookie |
 | `SSO_ALLOWED_REDIRECT_SUFFIX` | 空 | 允许登录后跳转的后缀 |
+| `SSO_STATE_URL` | `http://127.0.0.1:8290/api/auth/service` | 服务状态地址，用于强制下线 |
 | `PUSH_SERVER_TOKEN` | 空 | 服务间调用令牌 |
 | `PUSH_TOPIC` | `taskops/todo` | 默认 MQTT 下行 base |
 | `PRESENCE_TTL_SECONDS` | `180` | 客户端心跳超时时间 |

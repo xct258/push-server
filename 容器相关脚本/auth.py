@@ -19,8 +19,11 @@
 """
 import hashlib
 import hmac
+import json
 import os
+import threading
 import time
+import urllib.request
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
@@ -34,6 +37,9 @@ PUSH_TOKEN = os.environ.get("PUSH_SERVER_TOKEN", "")
 COOKIE_NAME = os.environ.get("SSO_COOKIE_NAME", "").strip()
 SSO_COOKIE_DOMAIN = os.environ.get("SSO_COOKIE_DOMAIN", "").strip()
 SSO_LOGIN_URL = os.environ.get("SSO_LOGIN_URL", "").strip()
+SSO_STATE_URL = os.environ.get(
+    "SSO_STATE_URL", "http://127.0.0.1:8290/api/auth/service"
+).rstrip("/")
 AUTH_ENABLED_RAW = os.environ.get("AUTH_ENABLED", "true").strip().lower()
 
 PUBLIC_PATHS = {
@@ -64,6 +70,34 @@ def _sign(payload: str) -> str:
     ).hexdigest()
 
 
+_state_lock = threading.Lock()
+_state_cache: tuple[float, str | None, bool | None] = (0.0, None, None)
+
+
+def remote_state() -> tuple[str | None, bool | None]:
+    """读取 auth-server 当前 Token 版本；缓存 2 秒，下线约 2 秒内生效。"""
+    global _state_cache
+    now = time.time()
+    with _state_lock:
+        expires, version, enabled = _state_cache
+    if now < expires:
+        return version, enabled
+
+    try:
+        url = f"{SSO_STATE_URL}/{quote(SERVICE_ID, safe='')}"
+        with urllib.request.urlopen(url, timeout=1.5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        version = str(data.get("token_version", "")) or None
+        enabled = bool(data.get("enabled"))
+    except Exception:
+        version = None
+        enabled = None
+
+    with _state_lock:
+        _state_cache = (now + 2.0, version, enabled)
+    return version, enabled
+
+
 def verify_token(token: str | None) -> bool:
     if not SERVICE_ID or not SERVICE_SECRET or not COOKIE_NAME or not token:
         return False
@@ -73,16 +107,21 @@ def verify_token(token: str | None) -> bool:
     version, service_id, token_version, expires, signature = parts
     if version != "v1" or service_id != SERVICE_ID:
         return False
-    if token_version != TOKEN_VERSION:
-        return False
     if not hmac.compare_digest(
         signature, _sign(f"v1.{service_id}.{token_version}.{expires}")
     ):
         return False
     try:
-        return int(expires) > int(time.time())
+        if int(expires) <= int(time.time()):
+            return False
     except ValueError:
         return False
+
+    remote_version, remote_enabled = remote_state()
+    if remote_enabled is False:
+        return False
+    expected_version = remote_version or TOKEN_VERSION
+    return token_version == expected_version
 
 
 def _token_ok(request: Request) -> bool:
