@@ -45,7 +45,7 @@ GET /api/auth/status
 POST /api/auth/logout
 ```
 
-接口未登录返回 `401`；页面未登录返回 `302` 到 `https://auth.o1-1.xct258.top/login?service=push-server&next=...`。
+接口未登录返回 `401`；页面未登录返回 `302` 到 `https://auth.xct258.top/login?service=push-server&next=...`。
 
 ### 1.2 服务间令牌
 
