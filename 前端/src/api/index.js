@@ -64,8 +64,6 @@ export const api = {
   /** 登录状态 / 登录 / 退出。 */
   auth: {
     status: () => request(`${API_PREFIX}/auth/status`),
-    login: (password) =>
-      request(`${API_PREFIX}/auth/login`, { method: 'POST', body: { password } }),
     logout: () => request(`${API_PREFIX}/auth/logout`, { method: 'POST' }),
   },
 

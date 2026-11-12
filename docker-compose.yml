@@ -16,12 +16,14 @@ services:
       - MQTT_WS_PORT=${MQTT_WS_PORT:-9001}
       # fastapi 的端口
       - UVICORN_PORT=${UVICORN_PORT:-8383}
-      - APP_PASSWORD=${APP_PASSWORD:-}
+      # 统一登录（SSO）：本服务不再提供本地登录，校验 auth-server 的 Cookie
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
       - APP_SECRET=${APP_SECRET:-}
-      - APP_SESSION_DAYS=${APP_SESSION_DAYS:-7}
+      - SSO_LOGIN_URL=${SSO_LOGIN_URL:-}
+      - SSO_COOKIE_NAME=${SSO_COOKIE_NAME:-sso_session}
+      - SSO_COOKIE_DOMAIN=${SSO_COOKIE_DOMAIN:-}
       - PUSH_SERVER_TOKEN=${PUSH_SERVER_TOKEN:-}
       - PRESENCE_TTL_SECONDS=${PRESENCE_TTL_SECONDS:-180}
       # 模板日志与服务摘要
       - LOG_BASE_DIR=/data/logs
       - SERVICE_PORT=${UVICORN_PORT:-8383}
-      - SERVICE_PASSWORD=${APP_PASSWORD:-}

@@ -17,31 +17,18 @@
 
 ## 1. 鉴权
 
-### 1.1 页面密码
+### 1.1 统一登录（SSO）
 
-设置环境变量 `APP_PASSWORD` 后启用单密码登录：
+push-server 不再提供本地登录页和 `/api/auth/login`，登录统一由 `auth-server` 完成：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `APP_PASSWORD` | 空 | 留空 = 不启用登录 |
-| `APP_SECRET` | 空 | Cookie 签名密钥；留空由密码派生 |
-| `APP_SESSION_DAYS` | `7` | 登录会话有效天数 |
+| `AUTH_ENABLED` | `true` | 是否启用登录校验 |
+| `APP_SECRET` | 空 | 会话签名密钥；必须与 auth-server 一致 |
+| `SSO_LOGIN_URL` | 空 | 统一登录页地址，未登录页面 302 到这里 |
+| `SSO_COOKIE_NAME` | `sso_session` | 共享 Cookie 名 |
+| `SSO_COOKIE_DOMAIN` | 空 | 父域，退出登录时用于清 Cookie |
 | `PUSH_SERVER_TOKEN` | 空 | 服务间调用令牌 |
-
-登录：
-
-```http
-POST /api/auth/login
-Content-Type: application/json
-
-{"password": "你的密码"}
-```
-
-成功后返回 `HttpOnly` 会话 Cookie `push_session`。退出：
-
-```http
-POST /api/auth/logout
-```
 
 查看当前登录状态：
 
@@ -49,7 +36,13 @@ POST /api/auth/logout
 GET /api/auth/status
 ```
 
-同一 IP 连续输错 5 次会锁定 60 秒。
+退出登录（清除父域 Cookie）：
+
+```http
+POST /api/auth/logout
+```
+
+接口未登录返回 `401`；页面未登录返回 `302` 到 `https://auth.o1-1.xct258.top/login?next=...`。
 
 ### 1.2 服务间令牌
 
@@ -602,9 +595,11 @@ mosquitto_sub --url 'ws://<host>:9001/mqtt' \
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `APP_PASSWORD` | 空 | 管理页访问密码 |
-| `APP_SECRET` | 空 | 会话 Cookie 签名密钥 |
-| `APP_SESSION_DAYS` | `7` | 会话有效天数 |
+| `AUTH_ENABLED` | `true` | 是否启用统一登录校验 |
+| `APP_SECRET` | 空 | 会话签名密钥；必须与 auth-server 一致 |
+| `SSO_LOGIN_URL` | 空 | 统一登录页地址；未登录页面 302 到这里 |
+| `SSO_COOKIE_NAME` | `sso_session` | 共享 Cookie 名 |
+| `SSO_COOKIE_DOMAIN` | 空 | 父域，退出登录时清 Cookie |
 | `PUSH_SERVER_TOKEN` | 空 | 服务间调用令牌 |
 | `PUSH_TOPIC` | `taskops/todo` | 默认 MQTT 下行 base |
 | `PRESENCE_TTL_SECONDS` | `180` | 客户端心跳超时时间 |

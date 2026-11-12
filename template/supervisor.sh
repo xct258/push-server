@@ -184,7 +184,7 @@ log_rotate_loop() {
 print_start_info() {
     log -f success "服务已启动：${SERVICE_NAMES[*]}（PID ${SERVICE_PIDS[*]}）"
     [ -z "${SERVICE_PORT:-}" ] || log -f info "访问端口: ${SERVICE_PORT}"
-    [ -z "${SERVICE_PASSWORD:-}" ] || log -f info "密码: ${SERVICE_PASSWORD}"
+    [ -z "${SSO_LOGIN_URL:-}" ] || log -f info "统一登录: ${SSO_LOGIN_URL}"
 }
 
 # ------------------------------------------------------------

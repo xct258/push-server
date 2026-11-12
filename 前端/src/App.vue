@@ -7,7 +7,6 @@ import ToastHost from '@/components/ToastHost.vue'
 import { auth, loadAuth } from '@/auth'
 import { requestRefresh, uiState } from '@/store'
 import ClientsView from '@/views/ClientsView.vue'
-import LoginView from '@/views/LoginView.vue'
 import RecordsView from '@/views/RecordsView.vue'
 import TasksView from '@/views/TasksView.vue'
 
@@ -35,13 +34,20 @@ function loadNew() {
       <div class="absolute inset-0 bg-[radial-gradient(1100px_520px_at_50%_-220px,#0f1b3d_0%,#070b14_60%)]" />
     </div>
 
-    <div v-if="!auth.checked" class="relative z-10 flex flex-1 items-center justify-center">
+    <div v-if="!auth.checked || !auth.authenticated" class="relative z-10 flex flex-1 items-center justify-center">
       <div class="text-center animate-pulse">
-        <div class="text-sm font-semibold tracking-[0.25em] text-slate-400">CHECKING ACCESS…</div>
+        <div class="text-sm font-semibold tracking-[0.25em] text-slate-400">
+          {{ auth.checked ? '未登录，正在跳转登录中心…' : 'CHECKING ACCESS…' }}
+        </div>
+        <a
+          v-if="auth.checked && auth.loginUrl"
+          :href="auth.loginUrl"
+          class="mt-3 inline-block text-xs text-indigo-300 hover:text-indigo-200"
+        >
+          手动前往登录
+        </a>
       </div>
     </div>
-
-    <LoginView v-else-if="!auth.authenticated" />
 
     <template v-else>
       <AppHeader

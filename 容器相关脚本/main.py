@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MQTT 推送中心 API", description="MQTT 推送中心的 HTTP 接口，文档由 OpenAPI 自动生成，访问 /api/docs 查看在线版。", lifespan=lifespan)
 
-# 管理页访问密码（APP_PASSWORD）：未设置时保持开放；设置后数据接口要求登录。
+# 统一登录（SSO）：会话由 auth-server 签发和校验，未登录接口返回 401。
 app.add_middleware(auth.AuthMiddleware)
 app.include_router(auth.router)
 
