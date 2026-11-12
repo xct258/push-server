@@ -1,27 +1,28 @@
-"""统一登录（SSO）会话校验：校验 auth-server 签发的服务 Token。
+"""统一登录（SSO）会话校验：交给 auth-server 集中验签。
 
-登录页面和登录接口都在 auth-server，本服务不再提供本地登录页。
-每个服务独立密码、独立 Cookie、独立签名密钥。
+登录页面和登录接口都在 auth-server，本服务不保存 SERVICE_SECRET。
+每个受保护请求都会带着浏览器 Cookie 调用：
+
+    GET {SSO_VERIFY_URL}?service=<SERVICE_ID>
+
+auth-server 返回 204 放行，401 拒绝。
 
 配置（环境变量）：
     AUTH_ENABLED          true/false；默认 true
     SERVICE_ID            服务 ID，例如 push-server
-    SERVICE_SECRET        该服务自己的签名密钥
-    SERVICE_TOKEN_VERSION 该服务的 Token 版本，默认 1
-    SSO_LOGIN_URL         登录页地址，例如 https://auth.o1-1.xct258.top/login
-    SSO_COOKIE_NAME       该服务的 Cookie 名，例如 sso_push_server
-    SSO_COOKIE_DOMAIN     父域，例如 .o1-1.xct258.top
+    SSO_VERIFY_URL        auth-server 验签地址
+    SSO_LOGIN_URL         登录页地址
+    SSO_COOKIE_NAME       该服务的 Cookie 名
+    SSO_COOKIE_DOMAIN     父域，退出登录时清 Cookie
 
 放行规则：
     - 状态/退出接口、健康检查、SPA 静态资源始终可访问；
     - 服务器上报入口 /api/push 与 TaskOps 同步入口 /api/task* 不要求登录；
     - 页面请求未登录 -> 302 统一登录中心；/api/*、/records -> 401。
 """
-import hashlib
 import hmac
-import json
 import os
-import time
+import urllib.error
 import urllib.request
 from urllib.parse import quote
 
@@ -30,14 +31,12 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 SERVICE_ID = os.environ.get("SERVICE_ID", "").strip()
-SERVICE_SECRET = os.environ.get("SERVICE_SECRET", "")
-TOKEN_VERSION = os.environ.get("SERVICE_TOKEN_VERSION", "1").strip()
 PUSH_TOKEN = os.environ.get("PUSH_SERVER_TOKEN", "")
 COOKIE_NAME = os.environ.get("SSO_COOKIE_NAME", "").strip()
 SSO_COOKIE_DOMAIN = os.environ.get("SSO_COOKIE_DOMAIN", "").strip()
 SSO_LOGIN_URL = os.environ.get("SSO_LOGIN_URL", "").strip()
-SSO_STATE_URL = os.environ.get(
-    "SSO_STATE_URL", "http://127.0.0.1:8290/api/auth/service"
+SSO_VERIFY_URL = os.environ.get(
+    "SSO_VERIFY_URL", "http://127.0.0.1:8290/api/auth/verify"
 ).rstrip("/")
 AUTH_ENABLED_RAW = os.environ.get("AUTH_ENABLED", "true").strip().lower()
 
@@ -60,50 +59,7 @@ def auth_enabled() -> bool:
         return True
     if AUTH_ENABLED_RAW in ("0", "false", "no", "off"):
         return False
-    return bool(SERVICE_ID and SERVICE_SECRET and SSO_LOGIN_URL)
-
-
-def _sign(payload: str) -> str:
-    return hmac.new(
-        SERVICE_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-
-
-def remote_state() -> tuple[str | None, bool | None]:
-    """每次访问时读取 auth-server 当前 Token 版本，下线后下一次请求生效。"""
-    try:
-        url = f"{SSO_STATE_URL}/{quote(SERVICE_ID, safe='')}"
-        with urllib.request.urlopen(url, timeout=1.0) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        return str(data.get("token_version", "")) or None, bool(data.get("enabled"))
-    except Exception:
-        return None, None
-
-
-def verify_token(token: str | None) -> bool:
-    if not SERVICE_ID or not SERVICE_SECRET or not COOKIE_NAME or not token:
-        return False
-    parts = token.split(".")
-    if len(parts) != 5:
-        return False
-    version, service_id, token_version, expires, signature = parts
-    if version != "v1" or service_id != SERVICE_ID:
-        return False
-    if not hmac.compare_digest(
-        signature, _sign(f"v1.{service_id}.{token_version}.{expires}")
-    ):
-        return False
-    try:
-        if int(expires) <= int(time.time()):
-            return False
-    except ValueError:
-        return False
-
-    remote_version, remote_enabled = remote_state()
-    if remote_enabled is False:
-        return False
-    expected_version = remote_version or TOKEN_VERSION
-    return token_version == expected_version
+    return bool(SERVICE_ID and SSO_LOGIN_URL)
 
 
 def _token_ok(request: Request) -> bool:
@@ -113,10 +69,27 @@ def _token_ok(request: Request) -> bool:
     )
 
 
+def _auth_server_verify(request: Request) -> bool:
+    if not SERVICE_ID or not COOKIE_NAME:
+        return False
+    cookie = request.headers.get("cookie", "")
+    if not cookie:
+        return False
+    url = f"{SSO_VERIFY_URL}?service={quote(SERVICE_ID, safe='')}"
+    req = urllib.request.Request(url, headers={"Cookie": cookie})
+    try:
+        with urllib.request.urlopen(req, timeout=2.0) as response:
+            return 200 <= response.status < 300
+    except urllib.error.HTTPError as exc:
+        return exc.code in (204, 304)
+    except Exception:
+        return False
+
+
 def is_authenticated(request: Request) -> bool:
     return (
         not auth_enabled()
-        or verify_token(request.cookies.get(COOKIE_NAME))
+        or _auth_server_verify(request)
         or _token_ok(request)
     )
 
