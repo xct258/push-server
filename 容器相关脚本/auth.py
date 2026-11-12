@@ -36,7 +36,7 @@ COOKIE_NAME = os.environ.get("SSO_COOKIE_NAME", "").strip()
 SSO_COOKIE_DOMAIN = os.environ.get("SSO_COOKIE_DOMAIN", "").strip()
 SSO_LOGIN_URL = os.environ.get("SSO_LOGIN_URL", "").strip()
 SSO_VERIFY_URL = os.environ.get(
-    "SSO_VERIFY_URL", "http://127.0.0.1:8290/api/auth/verify"
+    "SSO_VERIFY_URL", "https://auth.xct258.top/api/auth/verify"
 ).rstrip("/")
 AUTH_ENABLED_RAW = os.environ.get("AUTH_ENABLED", "true").strip().lower()
 
